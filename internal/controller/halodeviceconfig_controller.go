@@ -29,9 +29,6 @@ type component struct {
 // components lists every stanza of a defaulted spec, in status order.
 func components(spec halov1alpha1.HaloDeviceConfigSpec) []component {
 	return []component{
-		{"device-plugin", *spec.DevicePlugin.Enabled},
-		{"labeller", *spec.Labeller.Enabled},
-		{"metrics-exporter", *spec.MetricsExporter.Enabled},
 		{"memory-policy", *spec.MemoryPolicy.Enabled},
 		{"runtime-profile", true},
 		{"health-checks", *spec.HealthChecks.Enabled},

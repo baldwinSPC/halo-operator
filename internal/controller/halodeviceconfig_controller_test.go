@@ -14,8 +14,8 @@ import (
 func TestComponentStatusesDefaultSpec(t *testing.T) {
 	got := componentStatuses(halov1alpha1.HaloDeviceConfigSpec{}.WithDefaults(), metav1.Now())
 
-	if len(got) != 6 {
-		t.Fatalf("got %d components, want 6", len(got))
+	if len(got) != 3 {
+		t.Fatalf("got %d components, want 3", len(got))
 	}
 	for _, c := range got {
 		if c.State != halov1alpha1.ComponentNotImplemented {
@@ -30,17 +30,17 @@ func TestComponentStatusesDefaultSpec(t *testing.T) {
 func TestComponentStatusesDisabledIsDisabledNotOff(t *testing.T) {
 	f := false
 	spec := halov1alpha1.HaloDeviceConfigSpec{
-		MetricsExporter: halov1alpha1.MetricsExporterSpec{Enabled: &f},
+		MemoryPolicy: halov1alpha1.MemoryPolicySpec{Enabled: &f},
 	}.WithDefaults()
 
 	for _, c := range componentStatuses(spec, metav1.Now()) {
-		if c.Name != "metrics-exporter" {
+		if c.Name != "memory-policy" {
 			continue
 		}
 		if c.State != halov1alpha1.ComponentDisabled {
-			t.Errorf("metrics-exporter state = %s, want Disabled", c.State)
+			t.Errorf("memory-policy state = %s, want Disabled", c.State)
 		}
 		return
 	}
-	t.Fatal("metrics-exporter missing from component statuses")
+	t.Fatal("memory-policy missing from component statuses")
 }

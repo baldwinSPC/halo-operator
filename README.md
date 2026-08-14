@@ -1,23 +1,34 @@
 # glimmer-halo-operator
 
-A Kubernetes operator for AMD Strix Halo / "AI Halo" class devices
-(Ryzen AI Max, gfx1151, unified memory): it pulls the pieces a working
-GPU node needs — device plugin, APU-aware labelling, sysfs/hwmon metrics,
-unified-memory configuration verification, and health probes — into one
-reconciled lifecycle behind a single CRD, `HaloDeviceConfig`.
+A Kubernetes operator that keeps AMD Strix Halo / "AI Halo" nodes (Ryzen AI
+Max, gfx1151, unified memory) **configured the way a fleet declared they should
+be** — kernel arguments, unified-memory sizing, firmware versions and compute
+backend — behind a single CRD, `HaloDeviceConfig`.
+
+**It is not a GPU-stack operator, and deliberately so.** The device plugin, NFD
+detection and metrics exporter belong to AMD; gaps there are fixed in
+[our fork of ROCm/gpu-operator](https://github.com/baldwinSPC/gpu-operator) and
+offered upstream rather than reimplemented here. This operator *consumes* AMD's.
 
 Design and rationale live in
 [Glimmer GEP-0753](https://github.com/baldwinSPC/glimmer/blob/main/docs/geps/0753-amd-ai-halo.md).
 Implementation is tracked on this repository's issues.
 
-## Why an operator
+## Why this layer exists at all
 
-AMD's GPU Operator does not support APUs; the community runs Strix Halo
-Kubernetes from copy-paste guides (hand-written NFD rules, kernel-arg
-folklore, a bare device-plugin DaemonSet, no metrics because the amdsmi
-stack is blind on APUs). Five components share one lifecycle, one version
-matrix, and one status surface — that is an operator, not a pile of
-DaemonSets.
+The hardest-won knowledge in the Strix Halo community is not the GPU stack —
+that works today with AMD's operator (`driver.enable: false` plus an NFD rule).
+It is **node configuration**: kernel args (`amd_iommu=off`,
+`amdgpu.gttsize`, `ttm.pages_limit`), a kernel-version floor, linux-firmware
+pins where one release breaks ROCm and the next fixes it, and whether Vulkan or
+ROCm is the right backend for a given workload. Today that lives in wiki pages
+and is applied by hand, drifts silently, and is discovered when a node is slow
+rather than when it is wrong.
+
+No GPU operator models any of it, in any vendor's design — the NVIDIA analogue
+is DGX Spark Enterprise Manageability, a different product category. That gap is
+what this reconciles, and it is why the components below are all
+*verification and policy* rather than workload plumbing.
 
 ## API
 
@@ -26,12 +37,13 @@ component stanzas:
 
 | Stanza | What it manages |
 |---|---|
-| `devicePlugin` | The ROCm device plugin (`amd.com/gpu`), APU-validated pinning |
-| `labeller` | APU-aware detection: NFD rule + KFD-derived capability labels |
-| `metricsExporter` | sysfs/hwmon metrics (temperature, power, clocks, utilization, VRAM **and GTT**) |
-| `memoryPolicy` | Verification only — observes kernel args and effective GTT, reports drift; never mutates the host |
+| `memoryPolicy` | Verification only — observes kernel args and effective GTT, reports drift; **never mutates the host** |
 | `runtimeProfile` | Vulkan/ROCm backend selection surfaced as labels + validated runtime images |
 | `healthChecks` | Probes for the documented APU failure modes (clock-under-load, permission-fault, queue-create) |
+
+Upstream owns the rest. `devicePlugin`, `labeller` and `metricsExporter` were
+specified here in the first draft and were removed once it was clear they are
+fixes to AMD's product rather than a missing one.
 
 Status reports per-component state with three-valued semantics — a
 component is `Ready`, `Degraded`, or `NotObserved`; absence of information

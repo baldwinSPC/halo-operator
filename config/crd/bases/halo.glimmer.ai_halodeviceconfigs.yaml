@@ -47,19 +47,19 @@ spec:
           metadata:
             type: object
           spec:
-            description: HaloDeviceConfigSpec defines the desired GPU-stack state
-              for Halo nodes.
+            description: |-
+              HaloDeviceConfigSpec defines the desired NODE CONFIGURATION for Halo nodes.
+
+              It is deliberately NOT a GPU-stack config. The device plugin, NFD detection
+              and metrics exporter are AMD's product and are contributed upstream to
+              ROCm/gpu-operator rather than reimplemented here; this operator consumes that
+              one. What it owns is the layer no GPU operator models in any vendor's design:
+              whether a node's kernel arguments, unified-memory sizing, firmware versions
+              and compute backend are what the fleet declared they should be.
+
+              The NVIDIA analogue is not the GPU Operator — it is DGX Spark Enterprise
+              Manageability, which is a different product category.
             properties:
-              devicePlugin:
-                description: DevicePluginSpec configures the ROCm device plugin (amd.com/gpu).
-                properties:
-                  enabled:
-                    description: Enabled defaults to true.
-                    type: boolean
-                  image:
-                    description: Image overrides the pinned device-plugin image.
-                    type: string
-                type: object
               healthChecks:
                 description: HealthChecksSpec enables probes for the documented APU
                   failure modes.
@@ -76,18 +76,6 @@ spec:
                       - queue-create
                       type: string
                     type: array
-                type: object
-              labeller:
-                description: |-
-                  LabellerSpec configures APU-aware node labelling: the NFD rule that
-                  recognises the iGPU plus capability labels derived from KFD topology.
-                properties:
-                  enabled:
-                    description: Enabled defaults to true.
-                    type: boolean
-                  image:
-                    description: Image overrides the pinned labeller image.
-                    type: string
                 type: object
               memoryPolicy:
                 description: |-
@@ -113,31 +101,14 @@ spec:
                     minimum: 0
                     type: integer
                 type: object
-              metricsExporter:
-                description: |-
-                  MetricsExporterSpec configures the sysfs/hwmon metrics exporter
-                  (temperature, power, clocks, utilization, VRAM and GTT).
-                properties:
-                  enabled:
-                    description: Enabled defaults to true.
-                    type: boolean
-                  image:
-                    description: Image overrides the pinned exporter image.
-                    type: string
-                  port:
-                    description: Port is the exporter's metrics port. Defaults to
-                      9110.
-                    format: int32
-                    maximum: 65535
-                    minimum: 1
-                    type: integer
-                type: object
               nodeSelector:
                 additionalProperties:
                   type: string
                 description: |-
                   NodeSelector targets the nodes this config applies to. Empty means
-                  the nodes recognised by the labeller.
+                  every node carrying the AMD GPU node feature label, which AMD's GPU
+                  Operator applies through Node Feature Discovery; this operator
+                  consumes that labelling rather than performing its own.
                 type: object
               runtimeProfile:
                 description: RuntimeProfileSpec selects the compute backend surfaced

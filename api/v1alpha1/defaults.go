@@ -7,9 +7,6 @@ package v1alpha1
 // reliability and single-stream performance choice on gfx1151.
 const DefaultBackend = "vulkan"
 
-// DefaultMetricsPort is the exporter port when none is set.
-const DefaultMetricsPort int32 = 9110
-
 // KnownProbes is every health probe, in the order they are defaulted.
 var KnownProbes = []string{"clock-under-load", "permission-fault", "queue-create"}
 
@@ -18,14 +15,8 @@ var KnownProbes = []string{"clock-under-load", "permission-fault", "queue-create
 // change takes effect without rewriting stored objects.
 func (s HaloDeviceConfigSpec) WithDefaults() HaloDeviceConfigSpec {
 	out := *s.DeepCopy()
-	out.DevicePlugin.Enabled = defaultTrue(out.DevicePlugin.Enabled)
-	out.Labeller.Enabled = defaultTrue(out.Labeller.Enabled)
-	out.MetricsExporter.Enabled = defaultTrue(out.MetricsExporter.Enabled)
 	out.MemoryPolicy.Enabled = defaultTrue(out.MemoryPolicy.Enabled)
 	out.HealthChecks.Enabled = defaultTrue(out.HealthChecks.Enabled)
-	if out.MetricsExporter.Port == 0 {
-		out.MetricsExporter.Port = DefaultMetricsPort
-	}
 	if out.RuntimeProfile.Backend == "" {
 		out.RuntimeProfile.Backend = DefaultBackend
 	}
