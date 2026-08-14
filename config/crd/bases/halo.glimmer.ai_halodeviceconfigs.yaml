@@ -106,7 +106,9 @@ spec:
                   type: string
                 description: |-
                   NodeSelector targets the nodes this config applies to. Empty means
-                  the nodes recognised by the labeller.
+                  every node carrying the AMD GPU node feature label, which AMD's GPU
+                  Operator applies through Node Feature Discovery; this operator
+                  consumes that labelling rather than performing its own.
                 type: object
               runtimeProfile:
                 description: RuntimeProfileSpec selects the compute backend surfaced

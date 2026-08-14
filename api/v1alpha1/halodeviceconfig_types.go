@@ -60,7 +60,9 @@ type HealthChecksSpec struct {
 // Manageability, which is a different product category.
 type HaloDeviceConfigSpec struct {
 	// NodeSelector targets the nodes this config applies to. Empty means
-	// the nodes recognised by the labeller.
+	// every node carrying the AMD GPU node feature label, which AMD's GPU
+	// Operator applies through Node Feature Discovery; this operator
+	// consumes that labelling rather than performing its own.
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
