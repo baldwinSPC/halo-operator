@@ -1,4 +1,4 @@
-// Copyright 2026 the glimmer-halo-operator authors
+// Copyright 2026 the AMD Halo Operator authors
 // SPDX-License-Identifier: Apache-2.0
 
 package v1alpha1

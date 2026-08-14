@@ -1,4 +1,4 @@
-module github.com/baldwinSPC/glimmer-halo-operator
+module github.com/baldwinSPC/halo-operator
 
 go 1.26.1
 

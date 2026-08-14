@@ -4,9 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: halodeviceconfigs.halo.glimmer.ai
+  name: halodeviceconfigs.amd.halo.glimmer.ai
 spec:
-  group: halo.glimmer.ai
+  group: amd.halo.glimmer.ai
   names:
     kind: HaloDeviceConfig
     listKind: HaloDeviceConfigList

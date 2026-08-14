@@ -1,4 +1,4 @@
-// Copyright 2026 the glimmer-halo-operator authors
+// Copyright 2026 the AMD Halo Operator authors
 // SPDX-License-Identifier: Apache-2.0
 
 package controller
@@ -8,7 +8,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	halov1alpha1 "github.com/baldwinSPC/glimmer-halo-operator/api/v1alpha1"
+	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 )
 
 func TestComponentStatusesDefaultSpec(t *testing.T) {

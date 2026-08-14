@@ -1,4 +1,4 @@
-# Copyright 2026 the glimmer-halo-operator authors
+# Copyright 2026 the AMD Halo Operator authors
 # SPDX-License-Identifier: Apache-2.0
 
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
@@ -33,6 +33,6 @@ manifests:
 .PHONY: verify-no-glimmer-imports
 verify-no-glimmer-imports:
 	@if grep -rEn 'github\.com/baldwinSPC/glimmer(/|")' --include='*.go' .; then \
-		echo "glimmer-halo-operator must never import glimmer" >&2; \
+		echo "the AMD Halo Operator must never import glimmer" >&2; \
 		exit 1; \
 	fi
