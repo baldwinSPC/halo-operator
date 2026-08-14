@@ -1,6 +1,7 @@
 # Copyright 2026 the AMD Halo Operator authors
 # SPDX-License-Identifier: Apache-2.0
 
+LOCALBIN ?= $(shell pwd)/bin
 CONTROLLER_TOOLS_VERSION ?= v0.19.0
 CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
 
@@ -8,8 +9,20 @@ CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTRO
 build:
 	go build ./...
 
+ENVTEST_K8S_VERSION ?= 1.36.2
+SETUP_ENVTEST = go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1
+
+.PHONY: envtest-assets
+envtest-assets: ## Download the control-plane binaries the envtest suite needs.
+	$(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN)
+
 .PHONY: test
-test:
+test: ## Run every test, including the envtest suite.
+	KUBEBUILDER_ASSETS="$(shell $(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
+		go test ./...
+
+.PHONY: test-unit
+test-unit: ## Run only the tests that need no control plane.
 	go test ./...
 
 .PHONY: vet

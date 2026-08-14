@@ -30,7 +30,19 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test
-        run: go test ./...
+        # make test resolves KUBEBUILDER_ASSETS, so the envtest suite runs for
+        # real here. It skips when the assets are missing, and a silent skip is
+        # indistinguishable from a pass.
+        run: make test
+
+      - name: The envtest suite actually ran
+        run: |
+          KUBEBUILDER_ASSETS="$(go run sigs.k8s.io/controller-runtime/tools/setup-envtest@v0.24.1 use 1.36.2 --bin-dir "$(pwd)/bin" -p path)" \
+            go test ./internal/controller/ -run TestCRDAcceptsTheSample -v | tee /tmp/envtest.log
+          if grep -q "SKIP" /tmp/envtest.log; then
+            echo "the envtest suite skipped; the control-plane assets are missing" >&2
+            exit 1
+          fi
       - name: Generated files are current
         run: |
           make generate manifests
