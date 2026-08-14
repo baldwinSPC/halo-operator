@@ -30,6 +30,10 @@ type HaloDeviceConfigReconciler struct {
 	// nil observer means no source is wired up, which is reported as
 	// NotObserved rather than quietly treated as compliance.
 	MemoryObserver NodeObserver
+
+	// HealthObserver reads the health signals of the targeted nodes. A nil
+	// observer is reported as NotObserved, never as a clean bill of health.
+	HealthObserver HealthObserver
 }
 
 // component pairs a stanza name with its resolved enablement.
@@ -39,11 +43,11 @@ type component struct {
 }
 
 // notYetImplemented lists the stanzas whose controllers do not exist yet, in
-// status order. memory-policy is absent from it because it is implemented.
+// status order. memory-policy and health-checks are absent from it because
+// they are implemented.
 func notYetImplemented(spec halov1alpha1.HaloDeviceConfigSpec) []component {
 	return []component{
 		{componentRuntimeProfile, true},
-		{componentHealthChecks, *spec.HealthChecks.Enabled},
 	}
 }
 
@@ -116,11 +120,13 @@ func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	now := metav1.Now()
 
 	memoryStatus, memoryCondition := evaluateMemoryPolicy(ctx, r.MemoryObserver, &cfg, spec, now)
+	healthStatus, healthCondition := evaluateHealthChecks(ctx, r.HealthObserver, &cfg, spec, now)
 
 	cfg.Status.ObservedGeneration = cfg.Generation
-	cfg.Status.Components = append([]halov1alpha1.ComponentStatus{memoryStatus},
+	cfg.Status.Components = append([]halov1alpha1.ComponentStatus{memoryStatus, healthStatus},
 		componentStatuses(spec, now)...)
 	meta.SetStatusCondition(&cfg.Status.Conditions, memoryCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, healthCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions,
 		readyCondition(cfg.Status.Components, cfg.Generation))
 
