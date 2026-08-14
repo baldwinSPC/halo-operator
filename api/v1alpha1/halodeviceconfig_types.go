@@ -7,43 +7,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// DevicePluginSpec configures the ROCm device plugin (amd.com/gpu).
-type DevicePluginSpec struct {
-	// Enabled defaults to true.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
-	// Image overrides the pinned device-plugin image.
-	// +optional
-	Image string `json:"image,omitempty"`
-}
-
-// LabellerSpec configures APU-aware node labelling: the NFD rule that
-// recognises the iGPU plus capability labels derived from KFD topology.
-type LabellerSpec struct {
-	// Enabled defaults to true.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
-	// Image overrides the pinned labeller image.
-	// +optional
-	Image string `json:"image,omitempty"`
-}
-
-// MetricsExporterSpec configures the sysfs/hwmon metrics exporter
-// (temperature, power, clocks, utilization, VRAM and GTT).
-type MetricsExporterSpec struct {
-	// Enabled defaults to true.
-	// +optional
-	Enabled *bool `json:"enabled,omitempty"`
-	// Image overrides the pinned exporter image.
-	// +optional
-	Image string `json:"image,omitempty"`
-	// Port is the exporter's metrics port. Defaults to 9110.
-	// +optional
-	// +kubebuilder:validation:Minimum=1
-	// +kubebuilder:validation:Maximum=65535
-	Port int32 `json:"port,omitempty"`
-}
-
 // MemoryPolicySpec declares the expected unified-memory node
 // configuration. The operator verifies and reports drift; it never
 // mutates the host.
@@ -84,19 +47,23 @@ type HealthChecksSpec struct {
 	Probes []string `json:"probes,omitempty"`
 }
 
-// HaloDeviceConfigSpec defines the desired GPU-stack state for Halo nodes.
+// HaloDeviceConfigSpec defines the desired NODE CONFIGURATION for Halo nodes.
+//
+// It is deliberately NOT a GPU-stack config. The device plugin, NFD detection
+// and metrics exporter are AMD's product and are contributed upstream to
+// ROCm/gpu-operator rather than reimplemented here; this operator consumes that
+// one. What it owns is the layer no GPU operator models in any vendor's design:
+// whether a node's kernel arguments, unified-memory sizing, firmware versions
+// and compute backend are what the fleet declared they should be.
+//
+// The NVIDIA analogue is not the GPU Operator — it is DGX Spark Enterprise
+// Manageability, which is a different product category.
 type HaloDeviceConfigSpec struct {
 	// NodeSelector targets the nodes this config applies to. Empty means
 	// the nodes recognised by the labeller.
 	// +optional
 	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 
-	// +optional
-	DevicePlugin DevicePluginSpec `json:"devicePlugin,omitempty"`
-	// +optional
-	Labeller LabellerSpec `json:"labeller,omitempty"`
-	// +optional
-	MetricsExporter MetricsExporterSpec `json:"metricsExporter,omitempty"`
 	// +optional
 	MemoryPolicy MemoryPolicySpec `json:"memoryPolicy,omitempty"`
 	// +optional
