@@ -12,46 +12,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
+	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
 )
 
 func TestComponentStatusesDefaultSpec(t *testing.T) {
 	got := componentStatuses(halov1alpha1.HaloDeviceConfigSpec{}.WithDefaults(), metav1.Now())
 
-	// memory-policy is not here: it is implemented, so its status comes from
-	// evaluateMemoryPolicy rather than from the not-yet-implemented list.
-	if len(got) != 2 {
-		t.Fatalf("got %d components, want 2", len(got))
+	// Only runtime-profile remains here. memory-policy and health-checks are
+	// implemented, so their statuses come from their own evaluators and
+	// reporting them as "not implemented" would be a lie.
+	if len(got) != 1 {
+		t.Fatalf("got %d components, want 1", len(got))
 	}
-	for _, c := range got {
-		if c.Name == componentMemoryPolicy {
-			t.Errorf("memory-policy must not be reported as not-implemented; it is implemented")
-		}
-		if c.State != halov1alpha1.ComponentNotImplemented {
-			t.Errorf("%s state = %s, want NotImplemented on a default spec", c.Name, c.State)
-		}
-		if c.LastObserved.IsZero() {
-			t.Errorf("%s has no observation timestamp", c.Name)
-		}
+	if got[0].Name != componentRuntimeProfile {
+		t.Errorf("component = %s, want %s", got[0].Name, componentRuntimeProfile)
 	}
-}
-
-func TestComponentStatusesDisabledIsDisabledNotOff(t *testing.T) {
-	f := false
-	spec := halov1alpha1.HaloDeviceConfigSpec{
-		HealthChecks: halov1alpha1.HealthChecksSpec{Enabled: &f},
-	}.WithDefaults()
-
-	for _, c := range componentStatuses(spec, metav1.Now()) {
-		if c.Name != componentHealthChecks {
-			continue
-		}
-		if c.State != halov1alpha1.ComponentDisabled {
-			t.Errorf("health-checks state = %s, want Disabled", c.State)
-		}
-		return
+	if got[0].State != halov1alpha1.ComponentNotImplemented {
+		t.Errorf("state = %s, want NotImplemented", got[0].State)
 	}
-	t.Fatal("health-checks missing from component statuses")
+	if got[0].LastObserved.IsZero() {
+		t.Errorf("component has no observation timestamp")
+	}
 }
 
 // stubObserver returns a fixed set of observations, so every decision below the
@@ -66,6 +48,8 @@ func (s stubObserver) Observe(context.Context, map[string]string) ([]memorypolic
 }
 
 func gib(v int32) *int32 { return &v }
+
+func i32(v int32) *int32 { return &v }
 
 func haloSpec() halov1alpha1.HaloDeviceConfigSpec {
 	return halov1alpha1.HaloDeviceConfigSpec{
@@ -290,6 +274,149 @@ func TestReadyCondition(t *testing.T) {
 			}
 			if got.ObservedGeneration != 3 {
 				t.Errorf("observedGeneration = %d, want 3", got.ObservedGeneration)
+			}
+		})
+	}
+}
+
+// stubHealthObserver returns fixed health readings, so the controller's mapping
+// from probe results to conditions is exercised without a node.
+type stubHealthObserver struct {
+	observations []healthchecks.Observation
+	err          error
+}
+
+func (s stubHealthObserver) ObserveHealth(context.Context, map[string]string) ([]healthchecks.Observation, error) {
+	return s.observations, s.err
+}
+
+func healthySpec() halov1alpha1.HaloDeviceConfigSpec {
+	return halov1alpha1.HaloDeviceConfigSpec{}.WithDefaults()
+}
+
+func TestEvaluateHealthChecks(t *testing.T) {
+	healthy := healthchecks.Observation{
+		Node:                "halo-1",
+		GPUBusyPercent:      i32(99),
+		SCLKMHz:             i32(2900),
+		RatedSCLKMHz:        i32(2900),
+		PermissionFaults:    i32(0),
+		QueueCreateFailures: i32(0),
+	}
+	clockLocked := healthy
+	clockLocked.Node = "halo-2"
+	clockLocked.SCLKMHz = i32(200)
+
+	testCases := []struct {
+		name          string
+		observer      HealthObserver
+		disable       bool
+		wantState     halov1alpha1.ComponentState
+		wantStatus    metav1.ConditionStatus
+		wantReason    string
+		wantInMessage string
+	}{
+		{
+			name:       "no observation source is Unknown, never healthy",
+			observer:   nil,
+			wantState:  halov1alpha1.ComponentNotObserved,
+			wantStatus: metav1.ConditionUnknown,
+			wantReason: "NoObservationSource",
+		},
+		{
+			name:       "a failed observation is Unknown, not a fault",
+			observer:   stubHealthObserver{err: errors.New("unreachable")},
+			wantState:  halov1alpha1.ComponentNotObserved,
+			wantStatus: metav1.ConditionUnknown,
+			wantReason: "ObservationFailed",
+		},
+		{
+			name:       "observing zero nodes is Unknown, never healthy",
+			observer:   stubHealthObserver{},
+			wantState:  halov1alpha1.ComponentNotObserved,
+			wantStatus: metav1.ConditionUnknown,
+			wantReason: "NotObserved",
+		},
+		{
+			name:       "every probe healthy is Ready and True",
+			observer:   stubHealthObserver{observations: []healthchecks.Observation{healthy}},
+			wantState:  halov1alpha1.ComponentReady,
+			wantStatus: metav1.ConditionTrue,
+			wantReason: "AllProbesHealthy",
+		},
+		{
+			name:          "a locked clock is Degraded and False, and cites the defect",
+			observer:      stubHealthObserver{observations: []healthchecks.Observation{healthy, clockLocked}},
+			wantState:     halov1alpha1.ComponentDegraded,
+			wantStatus:    metav1.ConditionFalse,
+			wantReason:    "ProbeFailed",
+			wantInMessage: "5750",
+		},
+		{
+			name:       "a disabled component is Disabled and Unknown",
+			observer:   stubHealthObserver{observations: []healthchecks.Observation{healthy}},
+			disable:    true,
+			wantState:  halov1alpha1.ComponentDisabled,
+			wantStatus: metav1.ConditionUnknown,
+			wantReason: "Disabled",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			spec := healthySpec()
+			if tc.disable {
+				f := false
+				spec.HealthChecks.Enabled = &f
+			}
+			cfg := &halov1alpha1.HaloDeviceConfig{}
+			cfg.Generation = 5
+
+			status, condition := evaluateHealthChecks(
+				context.Background(), tc.observer, cfg, spec, metav1.Now())
+
+			if status.State != tc.wantState {
+				t.Errorf("component state = %s, want %s", status.State, tc.wantState)
+			}
+			if condition.Status != tc.wantStatus {
+				t.Errorf("condition status = %s, want %s", condition.Status, tc.wantStatus)
+			}
+			if condition.Reason != tc.wantReason {
+				t.Errorf("condition reason = %s, want %s", condition.Reason, tc.wantReason)
+			}
+			if condition.Type != halov1alpha1.ConditionNodesHealthy {
+				t.Errorf("condition type = %s, want %s", condition.Type, halov1alpha1.ConditionNodesHealthy)
+			}
+			if condition.ObservedGeneration != 5 {
+				t.Errorf("condition observedGeneration = %d, want 5", condition.ObservedGeneration)
+			}
+			if tc.wantInMessage != "" && !strings.Contains(condition.Message, tc.wantInMessage) {
+				t.Errorf("condition message %q does not cite %q", condition.Message, tc.wantInMessage)
+			}
+		})
+	}
+}
+
+// TestHealthChecksNeverReportHealthyWithoutObservation mirrors the memory
+// policy invariant: nothing unproven may read as a clean bill of health.
+func TestHealthChecksNeverReportHealthyWithoutObservation(t *testing.T) {
+	observers := map[string]HealthObserver{
+		"nil observer":       nil,
+		"observation failed": stubHealthObserver{err: errors.New("boom")},
+		"no nodes returned":  stubHealthObserver{},
+		"node not read": stubHealthObserver{
+			observations: []healthchecks.Observation{{Node: "halo-1"}},
+		},
+	}
+	for name, observer := range observers {
+		t.Run(name, func(t *testing.T) {
+			status, condition := evaluateHealthChecks(
+				context.Background(), observer, &halov1alpha1.HaloDeviceConfig{}, healthySpec(), metav1.Now())
+			if status.State == halov1alpha1.ComponentReady {
+				t.Errorf("component reported Ready without an observation")
+			}
+			if condition.Status == metav1.ConditionTrue {
+				t.Errorf("condition reported True without an observation")
 			}
 		})
 	}

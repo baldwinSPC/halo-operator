@@ -110,6 +110,13 @@ const ConditionReady = "Ready"
 // correctly.
 const ConditionMemoryPolicyCompliant = "MemoryPolicyCompliant"
 
+// ConditionNodesHealthy is True when every configured probe ran on every
+// targeted node and found no fault, False when a probe detected one of the
+// documented failure modes, and Unknown when health could not be established.
+// A probe that could not read its inputs leaves this Unknown; it never counts
+// as a clean bill of health.
+const ConditionNodesHealthy = "NodesHealthy"
+
 // HaloDeviceConfigStatus is the observed state of the config.
 type HaloDeviceConfigStatus struct {
 	// +optional
