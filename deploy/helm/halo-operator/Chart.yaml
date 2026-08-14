@@ -1,0 +1,21 @@
+apiVersion: v2
+name: halo-operator
+description: The AMD Halo Operator - node configuration for AMD Ryzen AI Max ("Strix Halo") Kubernetes nodes. Requires Kubernetes 1.29 or newer.
+type: application
+# version is the chart version; appVersion is the operator version. Both are
+# rewritten by the release tooling, so the committed values are placeholders.
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/baldwinSPC/halo-operator
+sources:
+  - https://github.com/baldwinSPC/halo-operator
+keywords:
+  - amd
+  - strix-halo
+  - ryzen-ai
+  - gpu
+  - node-configuration
+annotations:
+  # AMD, Ryzen and Radeon are trademarks of Advanced Micro Devices, Inc.
+  # This project is not affiliated with or endorsed by AMD.
+  licenses: Apache-2.0

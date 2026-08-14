@@ -40,3 +40,18 @@ verify-no-glimmer-imports:
 		echo "the AMD Halo Operator must never import glimmer" >&2; \
 		exit 1; \
 	fi
+
+CHART_DIR ?= deploy/helm/halo-operator
+
+.PHONY: helm-sync
+helm-sync: manifests ## Copy the generated CRD into the Helm chart.
+	cp config/crd/bases/*.yaml $(CHART_DIR)/crds/
+
+.PHONY: helm-lint
+helm-lint: ## Lint the Helm chart.
+	helm lint $(CHART_DIR)
+
+.PHONY: helm-package
+helm-package: helm-lint ## Package the chart into dist/.
+	mkdir -p dist
+	helm package $(CHART_DIR) --destination dist

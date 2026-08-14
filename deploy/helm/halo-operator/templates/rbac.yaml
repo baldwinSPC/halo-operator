@@ -1,0 +1,76 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "halo-operator.fullname" . }}
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+rules:
+# Kept in step with config/rbac/role.yaml, which controller-gen generates from
+# the kubebuilder markers on the reconciler. A drift test holds the two together.
+- apiGroups:
+  - amd.halo.glimmer.ai
+  resources:
+  - halodeviceconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - amd.halo.glimmer.ai
+  resources:
+  - halodeviceconfigs/status
+  verbs:
+  - get
+  - patch
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "halo-operator.fullname" . }}
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "halo-operator.fullname" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "halo-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- if .Values.leaderElection.enabled }}
+---
+# Leader election is namespaced: the lease lives beside the operator.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "halo-operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+rules:
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "halo-operator.fullname" . }}-leader-election
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "halo-operator.fullname" . }}-leader-election
+subjects:
+- kind: ServiceAccount
+  name: {{ include "halo-operator.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}
