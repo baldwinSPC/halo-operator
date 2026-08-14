@@ -25,8 +25,12 @@ generate:
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
 
 .PHONY: manifests
+# Scope generation to the real source trees. "./..." descends into any nested
+# checkout under the working tree, such as a git worktree parked in .claude/,
+# and silently merges its stale API markers into the generated CRDs and RBAC.
 manifests:
-	$(CONTROLLER_GEN) crd rbac:roleName=halo-operator-role paths="./..." \
+	$(CONTROLLER_GEN) crd rbac:roleName=halo-operator-role \
+		paths="./api/..." paths="./internal/..." paths="./cmd/..." \
 		output:crd:artifacts:config=config/crd/bases \
 		output:rbac:artifacts:config=config/rbac
 
