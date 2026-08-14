@@ -102,6 +102,14 @@ type ComponentStatus struct {
 // ConditionReady is True when every enabled component is Ready.
 const ConditionReady = "Ready"
 
+// ConditionMemoryPolicyCompliant is True when every targeted node was observed
+// and matched the declared memory policy, False when a node was observed to
+// disagree with it, and Unknown when compliance could not be established —
+// including when nothing has been observed at all. Unknown is a real answer
+// here, not a placeholder: an unread node is never reported as configured
+// correctly.
+const ConditionMemoryPolicyCompliant = "MemoryPolicyCompliant"
+
 // HaloDeviceConfigStatus is the observed state of the config.
 type HaloDeviceConfigStatus struct {
 	// +optional
