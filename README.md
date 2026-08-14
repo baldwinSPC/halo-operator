@@ -1,4 +1,6 @@
-# glimmer-halo-operator
+# AMD Halo Operator
+
+Node configuration for AMD Ryzen AI Max ("Strix Halo") Kubernetes nodes.
 
 A Kubernetes operator that keeps AMD Strix Halo / "AI Halo" nodes (Ryzen AI
 Max, gfx1151, unified memory) **configured the way a fleet declared they should
@@ -32,7 +34,7 @@ what this reconciles, and it is why the components below are all
 
 ## API
 
-`HaloDeviceConfig` (cluster-scoped, `halo.glimmer.ai/v1alpha1`) with
+`HaloDeviceConfig` (cluster-scoped, `amd.halo.glimmer.ai/v1alpha1`) with
 component stanzas:
 
 | Stanza | What it manages |
@@ -72,3 +74,17 @@ make manifests # regenerate CRD + RBAC into config/
 
 CI runs the same, plus a generated-files drift check and the
 no-glimmer-imports gate.
+
+## Trademarks
+
+AMD, Ryzen and Radeon are trademarks of Advanced Micro Devices, Inc. ROCm is a
+trademark of Advanced Micro Devices, Inc. Kubernetes is a registered trademark
+of The Linux Foundation.
+
+This project is an independent work. It is **not affiliated with, endorsed by,
+or sponsored by Advanced Micro Devices, Inc.** The AMD name is used only to
+identify the hardware this operator configures.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).

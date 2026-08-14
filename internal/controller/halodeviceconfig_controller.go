@@ -1,4 +1,4 @@
-// Copyright 2026 the glimmer-halo-operator authors
+// Copyright 2026 the AMD Halo Operator authors
 // SPDX-License-Identifier: Apache-2.0
 
 package controller
@@ -12,7 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	halov1alpha1 "github.com/baldwinSPC/glimmer-halo-operator/api/v1alpha1"
+	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 )
 
 // HaloDeviceConfigReconciler reconciles a HaloDeviceConfig.
@@ -53,8 +53,8 @@ func componentStatuses(spec halov1alpha1.HaloDeviceConfigSpec, now metav1.Time) 
 	return out
 }
 
-// +kubebuilder:rbac:groups=halo.glimmer.ai,resources=halodeviceconfigs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=halo.glimmer.ai,resources=halodeviceconfigs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=amd.halo.glimmer.ai,resources=halodeviceconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=amd.halo.glimmer.ai,resources=halodeviceconfigs/status,verbs=get;update;patch
 
 // Reconcile records the observed state of every component on the CR.
 func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {

@@ -1,4 +1,4 @@
-// Copyright 2026 the glimmer-halo-operator authors
+// Copyright 2026 the AMD Halo Operator authors
 // SPDX-License-Identifier: Apache-2.0
 
 // The halo-operator manager: registers the HaloDeviceConfig controller
@@ -17,8 +17,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	halov1alpha1 "github.com/baldwinSPC/glimmer-halo-operator/api/v1alpha1"
-	"github.com/baldwinSPC/glimmer-halo-operator/internal/controller"
+	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
+	"github.com/baldwinSPC/halo-operator/internal/controller"
 )
 
 var scheme = runtime.NewScheme()
@@ -46,7 +46,7 @@ func main() {
 		Metrics:                metricsserver.Options{BindAddress: metricsAddr},
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "halo-operator.halo.glimmer.ai",
+		LeaderElectionID:       "halo-operator.amd.halo.glimmer.ai",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
