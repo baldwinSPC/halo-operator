@@ -17,6 +17,14 @@ jobs:
           go-version-file: go.mod
       - name: Forbid glimmer imports
         run: make verify-no-glimmer-imports
+      - name: Helm is present
+        # The chart render tests skip when helm is missing. A silent skip is
+        # indistinguishable from a pass, so fail loudly instead.
+        run: helm version
+
+      - name: Lint the Helm chart
+        run: make helm-lint
+
       - name: Build
         run: go build ./...
       - name: Vet

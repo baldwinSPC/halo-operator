@@ -1,0 +1,74 @@
+# Default values for the AMD Halo Operator.
+
+image:
+  repository: ghcr.io/baldwinspc/halo-operator
+  # -- Image tag. Empty means the chart's appVersion, which is what release
+  # tooling sets, so pinning here is only for local or pre-release builds.
+  tag: ""
+  pullPolicy: IfNotPresent
+# -- Image pull secrets, as a list of {name: my-secret}.
+imagePullSecrets: []
+
+# -- Replica count. Leader election is what makes more than one safe; running
+# several replicas without it would have them fight over the same status.
+replicaCount: 1
+
+leaderElection:
+  # -- Elect a single active manager. Required if replicaCount is above 1.
+  enabled: true
+
+serviceAccount:
+  # -- Create the ServiceAccount. Set false to bring your own.
+  create: true
+  # -- Name to use. Empty means a name derived from the release.
+  name: ""
+  annotations: {}
+
+rbac:
+  # -- Create the ClusterRole and binding the operator needs to read
+  # HaloDeviceConfig resources and write their status.
+  create: true
+
+# -- Install the HaloDeviceConfig CRD. Helm installs anything under crds/ on
+# first install only; it does not upgrade or delete them. Set false when the
+# CRD is managed separately, for example by a cluster addon controller.
+installCRDs: true
+
+metrics:
+  # -- Port the controller-runtime metrics endpoint binds to.
+  port: 8080
+health:
+  # -- Port the health and readiness probes bind to.
+  port: 8081
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+# -- Pod-level security context.
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level security context. This operator only reads the API server;
+# it never touches a host, so it needs no privilege of any kind.
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}
+
+# -- Extra arguments appended to the manager command line.
+extraArgs: []

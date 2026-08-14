@@ -63,6 +63,23 @@ See [config/samples/](config/samples/) for an example resource.
 - Useful standalone: any Kubernetes user with Halo-class nodes can run it
   without Glimmer.
 
+## Installing
+
+Requires Kubernetes 1.29 or newer.
+
+```sh
+helm install halo-operator deploy/helm/halo-operator --namespace halo-system --create-namespace
+```
+
+The chart installs the CRD from its `crds/` directory. Helm installs those on
+first install only and never upgrades or removes them, so a CRD change needs
+`kubectl apply -f config/crd/bases/` at upgrade time. Set `installCRDs: false`
+when something else owns the CRD.
+
+Values worth knowing: `image.tag` defaults to the chart appVersion,
+`leaderElection.enabled` must stay on if `replicaCount` is above 1, and
+`rbac.create` / `serviceAccount.create` let you bring your own.
+
 ## Developing
 
 ```sh
@@ -70,6 +87,8 @@ make build     # go build ./...
 make test      # go test ./...
 make generate  # regenerate deepcopy (controller-gen)
 make manifests # regenerate CRD + RBAC into config/
+make helm-sync # copy the generated CRD into the chart
+make helm-lint # lint the chart
 ```
 
 CI runs the same, plus a generated-files drift check and the

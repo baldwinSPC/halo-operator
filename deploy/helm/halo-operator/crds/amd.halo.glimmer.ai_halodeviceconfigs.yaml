@@ -1,0 +1,227 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: halodeviceconfigs.amd.halo.glimmer.ai
+spec:
+  group: amd.halo.glimmer.ai
+  names:
+    kind: HaloDeviceConfig
+    listKind: HaloDeviceConfigList
+    plural: halodeviceconfigs
+    shortNames:
+    - hdc
+    singular: halodeviceconfig
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: HaloDeviceConfig is the GPU-stack configuration for Halo-class
+          nodes.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              HaloDeviceConfigSpec defines the desired NODE CONFIGURATION for Halo nodes.
+
+              It is deliberately NOT a GPU-stack config. The device plugin, NFD detection
+              and metrics exporter are AMD's product and are contributed upstream to
+              ROCm/gpu-operator rather than reimplemented here; this operator consumes that
+              one. What it owns is the layer no GPU operator models in any vendor's design:
+              whether a node's kernel arguments, unified-memory sizing, firmware versions
+              and compute backend are what the fleet declared they should be.
+
+              The NVIDIA analogue is not the GPU Operator — it is DGX Spark Enterprise
+              Manageability, which is a different product category.
+            properties:
+              healthChecks:
+                description: HealthChecksSpec enables probes for the documented APU
+                  failure modes.
+                properties:
+                  enabled:
+                    description: Enabled defaults to true.
+                    type: boolean
+                  probes:
+                    description: Probes defaults to every known probe.
+                    items:
+                      enum:
+                      - clock-under-load
+                      - permission-fault
+                      - queue-create
+                      type: string
+                    type: array
+                type: object
+              memoryPolicy:
+                description: |-
+                  MemoryPolicySpec declares the expected unified-memory node
+                  configuration. The operator verifies and reports drift; it never
+                  mutates the host.
+                properties:
+                  enabled:
+                    description: Enabled defaults to true.
+                    type: boolean
+                  expectedKernelArgs:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ExpectedKernelArgs maps kernel parameters to their expected values
+                      (e.g. "amdgpu.gttsize", "ttm.pages_limit", "amd_iommu").
+                    type: object
+                  minEffectiveGPUMemoryGiB:
+                    description: |-
+                      MinEffectiveGPUMemoryGiB is the floor for GTT-visible GPU memory; a
+                      node below it is reported as drifted.
+                    format: int32
+                    minimum: 0
+                    type: integer
+                type: object
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: |-
+                  NodeSelector targets the nodes this config applies to. Empty means
+                  every node carrying the AMD GPU node feature label, which AMD's GPU
+                  Operator applies through Node Feature Discovery; this operator
+                  consumes that labelling rather than performing its own.
+                type: object
+              runtimeProfile:
+                description: RuntimeProfileSpec selects the compute backend surfaced
+                  to workloads.
+                properties:
+                  backend:
+                    description: Backend defaults to vulkan.
+                    enum:
+                    - vulkan
+                    - rocm
+                    type: string
+                  runtimeImages:
+                    additionalProperties:
+                      type: string
+                    description: RuntimeImages maps a backend to its validated runtime
+                      image.
+                    type: object
+                type: object
+            type: object
+          status:
+            description: HaloDeviceConfigStatus is the observed state of the config.
+            properties:
+              components:
+                items:
+                  description: ComponentStatus reports one component's observed state.
+                  properties:
+                    lastObserved:
+                      description: LastObserved is when this state was taken.
+                      format: date-time
+                      type: string
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    state:
+                      description: |-
+                        ComponentState is the observed state of one managed component.
+                        Absence of information is NotObserved, never a confident "off".
+                      enum:
+                      - Disabled
+                      - NotImplemented
+                      - Progressing
+                      - Ready
+                      - Degraded
+                      - NotObserved
+                      type: string
+                  required:
+                  - name
+                  - state
+                  type: object
+                type: array
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
