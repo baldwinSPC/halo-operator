@@ -15,9 +15,21 @@ import (
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 )
 
+// Component names as they appear in status, in status order.
+const (
+	componentMemoryPolicy   = "memory-policy"
+	componentRuntimeProfile = "runtime-profile"
+	componentHealthChecks   = "health-checks"
+)
+
 // HaloDeviceConfigReconciler reconciles a HaloDeviceConfig.
 type HaloDeviceConfigReconciler struct {
 	client.Client
+
+	// MemoryObserver reads the memory configuration of the targeted nodes. A
+	// nil observer means no source is wired up, which is reported as
+	// NotObserved rather than quietly treated as compliance.
+	MemoryObserver NodeObserver
 }
 
 // component pairs a stanza name with its resolved enablement.
@@ -26,21 +38,21 @@ type component struct {
 	enabled bool
 }
 
-// components lists every stanza of a defaulted spec, in status order.
-func components(spec halov1alpha1.HaloDeviceConfigSpec) []component {
+// notYetImplemented lists the stanzas whose controllers do not exist yet, in
+// status order. memory-policy is absent from it because it is implemented.
+func notYetImplemented(spec halov1alpha1.HaloDeviceConfigSpec) []component {
 	return []component{
-		{"memory-policy", *spec.MemoryPolicy.Enabled},
-		{"runtime-profile", true},
-		{"health-checks", *spec.HealthChecks.Enabled},
+		{componentRuntimeProfile, true},
+		{componentHealthChecks, *spec.HealthChecks.Enabled},
 	}
 }
 
-// componentStatuses reports each component honestly: Disabled when the
-// spec disables it, NotImplemented while its controller does not exist
-// yet. No component is ever reported Ready without an observation.
+// componentStatuses reports each not-yet-implemented component honestly:
+// Disabled when the spec disables it, NotImplemented while its controller does
+// not exist yet. No component is ever reported Ready without an observation.
 func componentStatuses(spec halov1alpha1.HaloDeviceConfigSpec, now metav1.Time) []halov1alpha1.ComponentStatus {
 	var out []halov1alpha1.ComponentStatus
-	for _, c := range components(spec) {
+	for _, c := range notYetImplemented(spec) {
 		st := halov1alpha1.ComponentStatus{Name: c.name, LastObserved: now}
 		if !c.enabled {
 			st.State = halov1alpha1.ComponentDisabled
@@ -51,6 +63,41 @@ func componentStatuses(spec halov1alpha1.HaloDeviceConfigSpec, now metav1.Time) 
 		out = append(out, st)
 	}
 	return out
+}
+
+// readyCondition summarises the components into the overall Ready condition.
+// Ready is True only when at least one component is Ready and none is
+// Degraded, NotObserved or NotImplemented. A Disabled component neither
+// blocks readiness nor establishes it.
+func readyCondition(components []halov1alpha1.ComponentStatus, generation int64) metav1.Condition {
+	condition := metav1.Condition{
+		Type:               halov1alpha1.ConditionReady,
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: generation,
+	}
+	var ready, blocked int
+	for _, c := range components {
+		switch c.State {
+		case halov1alpha1.ComponentReady:
+			ready++
+		case halov1alpha1.ComponentDisabled:
+		default:
+			blocked++
+		}
+	}
+	switch {
+	case blocked > 0:
+		condition.Reason = "ComponentsNotReady"
+		condition.Message = "not every enabled component is Ready"
+	case ready == 0:
+		condition.Reason = "NothingEnabled"
+		condition.Message = "no component is enabled, so readiness is not established"
+	default:
+		condition.Status = metav1.ConditionTrue
+		condition.Reason = "AllComponentsReady"
+		condition.Message = "every enabled component is Ready"
+	}
+	return condition
 }
 
 // +kubebuilder:rbac:groups=amd.halo.glimmer.ai,resources=halodeviceconfigs,verbs=get;list;watch
@@ -67,15 +114,15 @@ func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	spec := cfg.Spec.WithDefaults()
 	now := metav1.Now()
+
+	memoryStatus, memoryCondition := evaluateMemoryPolicy(ctx, r.MemoryObserver, &cfg, spec, now)
+
 	cfg.Status.ObservedGeneration = cfg.Generation
-	cfg.Status.Components = componentStatuses(spec, now)
-	meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
-		Type:               halov1alpha1.ConditionReady,
-		Status:             metav1.ConditionFalse,
-		Reason:             "ComponentsNotImplemented",
-		Message:            "no component controllers are implemented yet",
-		ObservedGeneration: cfg.Generation,
-	})
+	cfg.Status.Components = append([]halov1alpha1.ComponentStatus{memoryStatus},
+		componentStatuses(spec, now)...)
+	meta.SetStatusCondition(&cfg.Status.Conditions, memoryCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions,
+		readyCondition(cfg.Status.Components, cfg.Generation))
 
 	if err := r.Status().Update(ctx, &cfg); err != nil {
 		return ctrl.Result{}, err
