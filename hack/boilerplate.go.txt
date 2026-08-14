@@ -1,0 +1,2 @@
+// Copyright 2026 the glimmer-halo-operator authors
+// SPDX-License-Identifier: Apache-2.0

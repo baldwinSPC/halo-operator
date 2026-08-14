@@ -1,0 +1,29 @@
+# Copyright 2026 the glimmer-halo-operator authors
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Forbid glimmer imports
+        run: make verify-no-glimmer-imports
+      - name: Build
+        run: go build ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Generated files are current
+        run: |
+          make generate manifests
+          git diff --exit-code

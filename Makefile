@@ -1,0 +1,38 @@
+# Copyright 2026 the glimmer-halo-operator authors
+# SPDX-License-Identifier: Apache-2.0
+
+CONTROLLER_TOOLS_VERSION ?= v0.19.0
+CONTROLLER_GEN = go run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_TOOLS_VERSION)
+
+.PHONY: build
+build:
+	go build ./...
+
+.PHONY: test
+test:
+	go test ./...
+
+.PHONY: vet
+vet:
+	go vet ./...
+
+.PHONY: fmt
+fmt:
+	gofmt -w .
+
+.PHONY: generate
+generate:
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/..."
+
+.PHONY: manifests
+manifests:
+	$(CONTROLLER_GEN) crd rbac:roleName=halo-operator-role paths="./..." \
+		output:crd:artifacts:config=config/crd/bases \
+		output:rbac:artifacts:config=config/rbac
+
+.PHONY: verify-no-glimmer-imports
+verify-no-glimmer-imports:
+	@if grep -rEn 'github\.com/baldwinSPC/glimmer(/|")' --include='*.go' .; then \
+		echo "glimmer-halo-operator must never import glimmer" >&2; \
+		exit 1; \
+	fi

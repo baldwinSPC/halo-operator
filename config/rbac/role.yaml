@@ -1,0 +1,22 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: halo-operator-role
+rules:
+- apiGroups:
+  - halo.glimmer.ai
+  resources:
+  - halodeviceconfigs
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - halo.glimmer.ai
+  resources:
+  - halodeviceconfigs/status
+  verbs:
+  - get
+  - patch
+  - update
