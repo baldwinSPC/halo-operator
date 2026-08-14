@@ -6,7 +6,6 @@ metadata:
 rules:
 - apiGroups:
   - amd.halo.glimmer.ai
-  - halo.glimmer.ai
   resources:
   - halodeviceconfigs
   verbs:
@@ -15,7 +14,6 @@ rules:
   - watch
 - apiGroups:
   - amd.halo.glimmer.ai
-  - halo.glimmer.ai
   resources:
   - halodeviceconfigs/status
   verbs:
