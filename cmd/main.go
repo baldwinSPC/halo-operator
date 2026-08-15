@@ -8,6 +8,7 @@ package main
 import (
 	"flag"
 	"os"
+	"time"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -19,6 +20,7 @@ import (
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/controller"
+	"github.com/baldwinSPC/halo-operator/internal/observe"
 )
 
 var scheme = runtime.NewScheme()
@@ -31,9 +33,12 @@ func init() {
 func main() {
 	var metricsAddr, probeAddr string
 	var enableLeaderElection bool
+	var maxObservationAge time.Duration
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8080", "The address the metrics endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false, "Enable leader election for controller manager.")
+	flag.DurationVar(&maxObservationAge, "max-observation-age", observe.DefaultMaxAge,
+		"How old a node's published observation may be and still count as knowledge. Older readings are treated as no reading, and the affected conditions go Unknown.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -53,7 +58,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.HaloDeviceConfigReconciler{Client: mgr.GetClient()}).SetupWithManager(mgr); err != nil {
+	// One observer serves both interfaces: the memory policy and the health
+	// checks read the same published observations, differently.
+	observer := &observe.Observer{Reader: mgr.GetClient(), MaxAge: maxObservationAge}
+	if err := (&controller.HaloDeviceConfigReconciler{
+		Client:         mgr.GetClient(),
+		MemoryObserver: observer,
+		HealthObserver: observer,
+		// Recheck at half the freshness window so an observation can never
+		// expire more than half a window before anyone notices.
+		RecheckPeriod: maxObservationAge / 2,
+	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "HaloDeviceConfig")
 		os.Exit(1)
 	}

@@ -9,9 +9,18 @@ rules:
 # Kept in step with config/rbac/role.yaml, which controller-gen generates from
 # the kubebuilder markers on the reconciler. A drift test holds the two together.
 - apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - amd.halo.glimmer.ai
   resources:
   - halodeviceconfigs
+  - halonodeobservations
   verbs:
   - get
   - list

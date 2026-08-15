@@ -1,0 +1,150 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.19.0
+  name: halonodeobservations.amd.halo.glimmer.ai
+spec:
+  group: amd.halo.glimmer.ai
+  names:
+    kind: HaloNodeObservation
+    listKind: HaloNodeObservationList
+    plural: halonodeobservations
+    shortNames:
+    - hno
+    singular: halonodeobservation
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.observedAt
+      name: Observed
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          HaloNodeObservation is what the node agent actually read off one node. It is
+          named after the node it describes and owned by that Node object, so deleting
+          the node garbage-collects the observation.
+
+          The agent is the only writer. It holds create/patch on this resource and
+          nothing else in the cluster — in particular it can never write Nodes, which
+          is what keeps a read-only observer from needing cluster-mutating power.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              HaloNodeObservationSpec is a report, not a desire. The node agent writes what
+              it read off one node; the controller reads it and nothing reconciles it
+              toward anything. It lives in spec rather than status so the whole object is
+              one writer's claim, applied in a single request (the Lease pattern), and so
+              the agent needs no status-subresource choreography.
+
+              Every reading is a pointer, and that is the contract of this type: a reading
+              that could not be taken is an absent field, never zero and never an empty
+              string. On a fault counter zero means "measured, nothing wrong", so
+              collapsing "not measured" into zero would silently turn an unread node into a
+              healthy one. Serialization preserves the distinction because absent fields
+              are omitted, and the agent publishes with server-side apply, so a reading
+              that was present last cycle and unreadable this cycle disappears from the
+              object rather than going stale.
+            properties:
+              gpuBusyPercent:
+                description: GPUBusyPercent is the device's gpu_busy_percent, 0 to
+                  100.
+                format: int32
+                minimum: 0
+                type: integer
+              gttTotalBytes:
+                description: |-
+                  GTTTotalBytes is the amdgpu GTT segment size in bytes, read from the
+                  device's mem_info_gtt_total. This is the node's effective GTT-visible
+                  GPU memory ceiling, the thing amdgpu.gttsize and ttm.pages_limit exist
+                  to raise.
+                format: int64
+                minimum: 0
+                type: integer
+              kernelCmdline:
+                description: |-
+                  KernelCmdline is the raw contents of /proc/cmdline, unparsed. Raw on
+                  purpose: parsing is interpretation and lives in one place, the
+                  controller (internal/memorypolicy.ParseKernelCmdline). Carrying the raw
+                  line also keeps "read fine, nothing set" (present, empty) structurally
+                  distinct from "could not read" (absent) — a parsed map cannot make that
+                  distinction survive JSON, because an empty map serializes away.
+                type: string
+              messages:
+                description: |-
+                  Messages says, for a human, why readings above are absent — one entry
+                  per reading that could not be taken. The controller never acts on
+                  these; absence itself carries the semantics.
+                items:
+                  type: string
+                type: array
+              observedAt:
+                description: |-
+                  ObservedAt is when the agent took these readings. The controller treats
+                  an observation older than its freshness window as no observation at all.
+                format: date-time
+                type: string
+              permissionFaults:
+                description: |-
+                  PermissionFaults counts PERMISSION_FAULT kernel-log entries in the
+                  agent's sampling window.
+
+                  No reader sets this yet. The kernel-log line formats are hardware facts
+                  to be read off a physical gfx1151 unit, and an unvalidated pattern that
+                  matches nothing would report "0 faults" — a clean bill of health this
+                  operator has no grounds to issue. Until the patterns are validated the
+                  field stays absent and the probe correctly reports NotObserved.
+                format: int32
+                minimum: 0
+                type: integer
+              queueCreateFailures:
+                description: |-
+                  QueueCreateFailures counts KFD queue-creation failures in the agent's
+                  sampling window. Absent for the same reason as PermissionFaults.
+                format: int32
+                minimum: 0
+                type: integer
+              ratedSCLKMHz:
+                description: |-
+                  RatedSCLKMHz is the top of the pp_dpm_sclk ladder, the clock the part
+                  is rated to reach, in MHz.
+                format: int32
+                minimum: 0
+                type: integer
+              sclkMHz:
+                description: |-
+                  SCLKMHz is the shader clock currently selected in the pp_dpm_sclk
+                  ladder, in MHz.
+                format: int32
+                minimum: 0
+                type: integer
+            required:
+            - observedAt
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources: {}

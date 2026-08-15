@@ -1,0 +1,94 @@
+{{- if .Values.agent.enabled }}
+# The node observation agent. It reads two things from the host, both mounted
+# read-only and both narrow: the kernel command line (a single file) and the
+# sysfs tree the amdgpu counters live in. It runs with no privilege, no host
+# network, no host PID namespace, and a cluster identity that can write
+# nothing but HaloNodeObservations. This operator never mutates a host, and
+# the agent's pod spec is where that is enforced, not just promised.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "halo-operator.fullname" . }}-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+spec:
+  selector:
+    matchLabels:
+      {{- include "halo-operator.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: node-agent
+  template:
+    metadata:
+      labels:
+        {{- include "halo-operator.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: node-agent
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "halo-operator.agentServiceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+      - name: agent
+        image: {{ include "halo-operator.image" . | quote }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command:
+        - /agent
+        args:
+        - --proc-root=/host/proc
+        - --sys-root=/host/sys
+        - --interval={{ .Values.agent.interval }}
+        {{- with .Values.agent.extraArgs }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        securityContext:
+          {{- toYaml .Values.securityContext | nindent 10 }}
+        resources:
+          {{- toYaml .Values.agent.resources | nindent 10 }}
+        volumeMounts:
+        # Only the one file the agent reads, not the host's whole /proc.
+        - name: proc-cmdline
+          mountPath: /host/proc/cmdline
+          readOnly: true
+        # /sys is mounted whole because the PCI device directories are a
+        # symlink farm into /sys/devices; a narrower mount would dangle.
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+      volumes:
+      - name: proc-cmdline
+        hostPath:
+          path: /proc/cmdline
+          type: File
+      - name: sys
+        hostPath:
+          path: /sys
+          type: Directory
+      {{- with .Values.agent.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: 10
+{{- end }}
