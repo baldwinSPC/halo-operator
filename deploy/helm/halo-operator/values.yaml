@@ -72,3 +72,32 @@ podLabels: {}
 
 # -- Extra arguments appended to the manager command line.
 extraArgs: []
+
+# The node observation agent: a DaemonSet on every AMD GPU node that reads the
+# kernel command line and the amdgpu sysfs counters — read-only, unprivileged —
+# and publishes each node's HaloNodeObservation. Without it every condition on
+# a HaloDeviceConfig honestly reports Unknown, because nothing is observed.
+agent:
+  # -- Run the agent. Disabling it does not fake anything: conditions fall
+  # back to Unknown/NotObserved, never to a claim of compliance.
+  enabled: true
+  # -- How often each node is read and its observation published.
+  interval: 1m
+  # -- Nodes to observe. The default is the label Node Feature Discovery
+  # applies to AMD GPU nodes via the rule AMD's GPU Operator installs, which
+  # is also what an empty HaloDeviceConfig nodeSelector targets.
+  nodeSelector:
+    feature.node.kubernetes.io/amd-gpu: "true"
+  # -- Tolerations, for fleets that taint GPU nodes.
+  tolerations: []
+  # -- PriorityClass for the agent pods.
+  priorityClassName: ""
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 5m
+      memory: 32Mi
+  # -- Extra arguments appended to the agent command line.
+  extraArgs: []

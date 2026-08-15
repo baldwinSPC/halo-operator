@@ -65,26 +65,44 @@ func documents(rendered string) []string {
 // documentOfKind returns the first rendered document declaring the given kind.
 func documentOfKind(t *testing.T, rendered, kind string) string {
 	t.Helper()
+	docs := documentsOfKind(rendered, kind)
+	if len(docs) == 0 {
+		t.Fatalf("no %s in the rendered chart", kind)
+	}
+	return docs[0]
+}
+
+// documentsOfKind returns every rendered document declaring the given kind.
+// Only a top-level, unindented kind line counts: a ClusterRoleBinding's
+// roleRef also says "kind: ClusterRole", two spaces in.
+func documentsOfKind(rendered, kind string) []string {
+	var out []string
 	for _, doc := range documents(rendered) {
 		for _, line := range strings.Split(doc, "\n") {
-			if strings.TrimSpace(line) == "kind: "+kind {
-				return doc
+			if line == "kind: "+kind {
+				out = append(out, doc)
+				break
 			}
 		}
 	}
-	t.Fatalf("no %s in the rendered chart", kind)
+	return out
+}
+
+// documentContaining returns the rendered document of the given kind whose
+// text contains the marker, for charts that render several of one kind.
+func documentContaining(t *testing.T, rendered, kind, marker string) string {
+	t.Helper()
+	for _, doc := range documentsOfKind(rendered, kind) {
+		if strings.Contains(doc, marker) {
+			return doc
+		}
+	}
+	t.Fatalf("no %s containing %q in the rendered chart", kind, marker)
 	return ""
 }
 
 func hasKind(rendered, kind string) bool {
-	for _, doc := range documents(rendered) {
-		for _, line := range strings.Split(doc, "\n") {
-			if strings.TrimSpace(line) == "kind: "+kind {
-				return true
-			}
-		}
-	}
-	return false
+	return len(documentsOfKind(rendered, kind)) > 0
 }
 
 func TestDefaultInstallRendersEveryObject(t *testing.T) {
@@ -97,6 +115,7 @@ func TestDefaultInstallRendersEveryObject(t *testing.T) {
 		"Role",
 		"RoleBinding",
 		"Deployment",
+		"DaemonSet",
 	} {
 		if !hasKind(rendered, kind) {
 			t.Errorf("a default install renders no %s", kind)
@@ -104,23 +123,28 @@ func TestDefaultInstallRendersEveryObject(t *testing.T) {
 	}
 }
 
-// TestClusterRoleGrantsOnlyTheOwnedAPIGroup guards the defect that shipped
+// TestClusterRolesGrantOnlyTheOwnedAPIGroup guards the defect that shipped
 // once already: generated RBAC picked up a stale API group from a nested
-// checkout and granted access to a group this operator does not own.
-func TestClusterRoleGrantsOnlyTheOwnedAPIGroup(t *testing.T) {
-	role := documentOfKind(t, render(t), "ClusterRole")
-
-	if !strings.Contains(role, "amd.halo.glimmer.ai") {
-		t.Errorf("the ClusterRole does not grant the API group the operator owns")
+// checkout and granted access to a group this operator does not own. Every
+// ClusterRole in the chart is held to it, not just the first.
+func TestClusterRolesGrantOnlyTheOwnedAPIGroup(t *testing.T) {
+	roles := documentsOfKind(render(t), "ClusterRole")
+	if len(roles) == 0 {
+		t.Fatal("no ClusterRole in the rendered chart")
 	}
-	for _, forbidden := range []string{
-		"- halo.glimmer.ai",
-		`"*"`,
-		"- '*'",
-	} {
-		if strings.Contains(role, forbidden) {
-			t.Errorf("the ClusterRole contains %q, which grants more than this operator owns:\n%s",
-				forbidden, role)
+	for _, role := range roles {
+		if !strings.Contains(role, "amd.halo.glimmer.ai") {
+			t.Errorf("a ClusterRole does not grant the API group the operator owns:\n%s", role)
+		}
+		for _, forbidden := range []string{
+			"- halo.glimmer.ai",
+			`"*"`,
+			"- '*'",
+		} {
+			if strings.Contains(role, forbidden) {
+				t.Errorf("a ClusterRole contains %q, which grants more than this operator owns:\n%s",
+					forbidden, role)
+			}
 		}
 	}
 }
@@ -222,6 +246,147 @@ func TestManagerRunsUnprivileged(t *testing.T) {
 	for _, forbidden := range []string{"privileged: true", "hostPID: true", "hostNetwork: true"} {
 		if strings.Contains(deployment, forbidden) {
 			t.Errorf("the rendered Deployment contains %q", forbidden)
+		}
+	}
+}
+
+// TestAgentReadsTheHostWithoutPrivilege is the pod-level form of the read-only
+// contract: the agent touches exactly two host paths, both read-only, and
+// carries no privilege that could mutate a host even if it wanted to.
+func TestAgentReadsTheHostWithoutPrivilege(t *testing.T) {
+	agent := documentOfKind(t, render(t), "DaemonSet")
+
+	for _, want := range []string{
+		"runAsNonRoot: true",
+		"allowPrivilegeEscalation: false",
+		"readOnlyRootFilesystem: true",
+		"- ALL",
+		"path: /proc/cmdline",
+		"type: File",
+		"path: /sys",
+		"readOnly: true",
+	} {
+		if !strings.Contains(agent, want) {
+			t.Errorf("the rendered DaemonSet is missing %q:\n%s", want, agent)
+		}
+	}
+	for _, forbidden := range []string{"privileged: true", "hostPID: true", "hostNetwork: true"} {
+		if strings.Contains(agent, forbidden) {
+			t.Errorf("the rendered DaemonSet contains %q", forbidden)
+		}
+	}
+	// Both host mounts must be read-only — a writable one would contradict
+	// the operator's whole posture.
+	if got := strings.Count(agent, "readOnly: true"); got < 2 {
+		t.Errorf("only %d of the host mounts are read-only:\n%s", got, agent)
+	}
+}
+
+// TestAgentTargetsAMDGPUNodesByDefault pins the default placement to the NFD
+// label AMD's GPU Operator applies, the same label the controller's default
+// selector targets — the agent should run exactly where observations are
+// expected from.
+func TestAgentTargetsAMDGPUNodesByDefault(t *testing.T) {
+	agent := documentOfKind(t, render(t), "DaemonSet")
+	if !strings.Contains(agent, "feature.node.kubernetes.io/amd-gpu") {
+		t.Errorf("the DaemonSet does not target the AMD GPU node label:\n%s", agent)
+	}
+	if !strings.Contains(agent, "fieldPath: spec.nodeName") {
+		t.Errorf("the DaemonSet does not pass the node name down to the agent:\n%s", agent)
+	}
+}
+
+// TestAgentIdentityCanOnlyPublishObservations holds the agent's ClusterRole to
+// the least privilege the design claims: create/patch on observations, get on
+// nodes, and nothing else — no writes to Nodes, no reach into the config CRD.
+func TestAgentIdentityCanOnlyPublishObservations(t *testing.T) {
+	rendered := render(t)
+	role := documentContaining(t, rendered, "ClusterRole", "halonodeobservations")
+	// Two ClusterRoles mention halonodeobservations; pick the agent's by name.
+	if !strings.Contains(role, "-agent") {
+		role = ""
+		for _, doc := range documentsOfKind(rendered, "ClusterRole") {
+			if strings.Contains(doc, "name: halo-halo-operator-agent") {
+				role = doc
+			}
+		}
+		if role == "" {
+			t.Fatal("no agent ClusterRole in the rendered chart")
+		}
+	}
+
+	for _, want := range []string{"halonodeobservations", "create", "patch"} {
+		if !strings.Contains(role, want) {
+			t.Errorf("the agent ClusterRole is missing %q:\n%s", want, role)
+		}
+	}
+	for _, forbidden := range []string{
+		"halodeviceconfigs", // the agent has no business reading or writing configs
+		"- update",
+		"- delete",
+		"- deletecollection",
+	} {
+		if strings.Contains(role, forbidden) {
+			t.Errorf("the agent ClusterRole grants %q, which a read-only observer never needs:\n%s",
+				forbidden, role)
+		}
+	}
+	// nodes: get only — the agent reads its own Node for ownership and may
+	// never list the fleet or write anything.
+	if !strings.Contains(role, "nodes") {
+		t.Errorf("the agent ClusterRole cannot read its own Node for ownership:\n%s", role)
+	}
+	for _, forbidden := range []string{"- list", "- watch"} {
+		if strings.Contains(role, forbidden) {
+			t.Errorf("the agent ClusterRole grants %q on nodes; get alone suffices:\n%s",
+				forbidden, role)
+		}
+	}
+}
+
+// TestAgentOptOut proves agent.enabled=false removes the DaemonSet and the
+// agent's identity but leaves the manager intact — the conditions then report
+// Unknown, which is the honest state of an unobserved fleet.
+func TestAgentOptOut(t *testing.T) {
+	rendered := render(t, "--set", "agent.enabled=false")
+	if hasKind(rendered, "DaemonSet") {
+		t.Error("the DaemonSet is still rendered with agent.enabled=false")
+	}
+	for _, doc := range documentsOfKind(rendered, "ClusterRole") {
+		if strings.Contains(doc, "name: halo-halo-operator-agent") {
+			t.Error("the agent ClusterRole is still rendered with agent.enabled=false")
+		}
+	}
+	if !hasKind(rendered, "Deployment") {
+		t.Error("disabling the agent also removed the manager")
+	}
+}
+
+// TestManagerRoleReadsObservations extends the RBAC drift guard to the new
+// resources: the manager must be able to read observations and nodes, and
+// must not be able to write either.
+func TestManagerRoleReadsObservations(t *testing.T) {
+	rendered := render(t)
+	var manager string
+	for _, doc := range documentsOfKind(rendered, "ClusterRole") {
+		if strings.Contains(doc, "halodeviceconfigs") {
+			manager = doc
+			break
+		}
+	}
+	if manager == "" {
+		t.Fatal("no manager ClusterRole in the rendered chart")
+	}
+	for _, want := range []string{"halonodeobservations", "nodes"} {
+		if !strings.Contains(manager, want) {
+			t.Errorf("the manager ClusterRole cannot read %s; conditions could never leave Unknown:\n%s",
+				want, manager)
+		}
+	}
+	for _, forbidden := range []string{"- create", "- delete"} {
+		if strings.Contains(manager, forbidden) {
+			t.Errorf("the manager ClusterRole grants %q; the manager only reads nodes and observations and writes config status:\n%s",
+				forbidden, manager)
 		}
 	}
 }

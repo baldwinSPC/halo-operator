@@ -5,12 +5,19 @@ package controller
 
 import (
 	"context"
+	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 )
@@ -34,6 +41,14 @@ type HaloDeviceConfigReconciler struct {
 	// HealthObserver reads the health signals of the targeted nodes. A nil
 	// observer is reported as NotObserved, never as a clean bill of health.
 	HealthObserver HealthObserver
+
+	// RecheckPeriod re-runs the evaluation this often even with no cluster
+	// events. Observations expire by aging past the freshness window, which
+	// produces no event — a dead agent goes quiet, it does not announce
+	// itself — so without a periodic recheck a condition could sit at True
+	// on the strength of an observation nobody can refresh. Zero disables
+	// the backstop, for tests that drive reconciles by hand.
+	RecheckPeriod time.Duration
 }
 
 // component pairs a stanza name with its resolved enablement.
@@ -106,6 +121,8 @@ func readyCondition(components []halov1alpha1.ComponentStatus, generation int64)
 
 // +kubebuilder:rbac:groups=amd.halo.glimmer.ai,resources=halodeviceconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=amd.halo.glimmer.ai,resources=halodeviceconfigs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=amd.halo.glimmer.ai,resources=halonodeobservations,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 
 // Reconcile records the observed state of every component on the CR.
 func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -134,13 +151,44 @@ func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, err
 	}
 	log.Info("recorded component states", "components", len(cfg.Status.Components))
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: r.RecheckPeriod}, nil
 }
 
 // SetupWithManager registers the controller.
+//
+// Beside its own CRD, the controller re-evaluates every config when a
+// HaloNodeObservation changes — that is how a fresh reading becomes a fresh
+// condition — and when the set of targeted nodes can have changed. Node
+// updates are filtered to label changes: the target join is by label, and
+// reacting to every heartbeat would reconcile the world on a timer that is
+// not ours.
 func (r *HaloDeviceConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&halov1alpha1.HaloDeviceConfig{}).
+		Watches(&halov1alpha1.HaloNodeObservation{},
+			handler.EnqueueRequestsFromMapFunc(r.allConfigs)).
+		Watches(&corev1.Node{},
+			handler.EnqueueRequestsFromMapFunc(r.allConfigs),
+			builder.WithPredicates(predicate.LabelChangedPredicate{})).
 		Named("halodeviceconfig").
 		Complete(r)
+}
+
+// allConfigs fans a node-side event out to every HaloDeviceConfig. Configs are
+// cluster-scoped and few — typically one — and which nodes each one targets is
+// a selector evaluated at observe time, so requeueing them all is both cheap
+// and simpler than reverse-mapping selectors.
+func (r *HaloDeviceConfigReconciler) allConfigs(ctx context.Context, _ client.Object) []reconcile.Request {
+	var list halov1alpha1.HaloDeviceConfigList
+	if err := r.List(ctx, &list); err != nil {
+		logf.FromContext(ctx).Error(err, "listing configs to requeue after a node event")
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(list.Items))
+	for i := range list.Items {
+		requests = append(requests, reconcile.Request{
+			NamespacedName: types.NamespacedName{Name: list.Items[i].Name},
+		})
+	}
+	return requests
 }

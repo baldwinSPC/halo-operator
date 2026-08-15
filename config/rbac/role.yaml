@@ -5,9 +5,18 @@ metadata:
   name: halo-operator-role
 rules:
 - apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - amd.halo.glimmer.ai
   resources:
   - halodeviceconfigs
+  - halonodeobservations
   verbs:
   - get
   - list

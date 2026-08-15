@@ -47,11 +47,81 @@ Upstream owns the rest. `devicePlugin`, `labeller` and `metricsExporter` were
 specified here in the first draft and were removed once it was clear they are
 fixes to AMD's product rather than a missing one.
 
+A second kind, `HaloNodeObservation` (cluster-scoped, one per node, shortname
+`hno`), carries what the node agent actually read. It is written by the agent
+and read by the controller — not user-authored — and exists so that every
+verdict on a `HaloDeviceConfig` is traceable to an inspectable, timestamped
+reading. See the next section.
+
 Status reports per-component state with three-valued semantics — a
 component is `Ready`, `Degraded`, or `NotObserved`; absence of information
 is never rendered as "off" — and every observation carries a timestamp.
 
 See [config/samples/](config/samples/) for an example resource.
+
+## How a condition gets its value
+
+Nothing in the controller touches a node. A separate **node observation
+agent** runs as a DaemonSet on every AMD GPU node (placed by the
+`feature.node.kubernetes.io/amd-gpu` label NFD applies), reads the kernel
+command line and the documented amdgpu sysfs counters — read-only,
+unprivileged, two narrow host mounts — and publishes what it read as a
+**`HaloNodeObservation`** (cluster-scoped, named after the node, owned by the
+Node object so node deletion garbage-collects it). The controller lists the
+targeted Nodes, joins observations by name, and judges the result:
+
+- a node that was **read and matched** the policy counts toward `True`;
+- a node **observed to disagree** drives the condition `False`, with the
+  parameter named;
+- a node whose observation is **missing, partial, or older than
+  `--max-observation-age`** (default 5m) counts as *unread* and holds the
+  condition at `Unknown`. It stays in the calculus — a fleet is not more
+  compliant because part of it stopped reporting.
+
+Readings travel as a CR rather than as Node annotations or a scrape endpoint
+for four load-bearing reasons. Absence is structural: every reading is an
+optional field, so "could not read" arrives as a *missing field*, never as a
+zero — on a fault counter zero means healthy, and that collapse is the one
+failure this design refuses by construction. Privilege is minimal: the agent
+can create and patch observations and read its own Node, nothing else — no
+write access to Nodes, which annotation-publishing would require. The flow is
+level-triggered: the controller watches observations, so readings persist
+across controller restarts and `kubectl get halonodeobservations` shows
+exactly what each node claimed. And it is the shape this ecosystem already
+reads — NFD's `NodeFeature` works the same way.
+
+The kernel command line is published raw and parsed controller-side, so
+"read fine, nothing set" (empty) and "could not read" (absent) stay distinct
+through serialization, and parse-rule fixes ship without redeploying agents.
+
+## Hardware validation pending
+
+The physical Halo units have not arrived. Everything the agent reads is
+**documented kernel ABI** (`mem_info_gtt_total`, `gpu_busy_percent`,
+`pp_dpm_sclk`, PCI `vendor`/`class`/`driver`), but how the first real gfx1151
+unit presents that ABI — device enumeration, ladder format, whether the
+counters populate at all on an APU — is deliberately unverified until it can
+be read off hardware. The collector is strict on purpose: any deviation from
+the documented formats is reported as *not observed*, never guessed at.
+`/agent --once` exists for exactly that bring-up day.
+
+Two consequences to know about:
+
+- **The kernel-log probes have no reader yet.** `permission-fault` and
+  `queue-create` count dmesg lines whose exact formats are hardware facts;
+  an unvalidated pattern that matches nothing would report "0 faults" — a
+  clean bill of health nobody measured. Until patterns are validated on a
+  real unit those counters are simply never published, the probes report
+  `NotObserved`, and a config using the default probe set holds
+  `NodesHealthy` at `Unknown`. Scope `healthChecks.probes` to
+  `[clock-under-load]` if you want that condition decidable today.
+- **Multi-GPU nodes are not chosen between.** With more than one
+  amdgpu-driven device the agent publishes no counters rather than silently
+  picking one; selection policy waits for hardware.
+
+No claim of hardware validation is made anywhere in this repository, and
+issues #4/#5 stay open until a condition reaches `True` against a physical
+node.
 
 ## Project boundaries
 
@@ -78,7 +148,12 @@ when something else owns the CRD.
 
 Values worth knowing: `image.tag` defaults to the chart appVersion,
 `leaderElection.enabled` must stay on if `replicaCount` is above 1, and
-`rbac.create` / `serviceAccount.create` let you bring your own.
+`rbac.create` / `serviceAccount.create` let you bring your own. The node
+agent is on by default (`agent.enabled`), runs on nodes matching
+`agent.nodeSelector` (the NFD AMD GPU label), and publishes every
+`agent.interval` (1m); disabling it does not fake anything — conditions fall
+back to `Unknown`. The image is expected to carry both `/manager` and
+`/agent` binaries.
 
 ## Developing
 

@@ -1,0 +1,62 @@
+{{- if and .Values.agent.enabled .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "halo-operator.agentServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- if and .Values.agent.enabled .Values.rbac.create }}
+---
+# What a read-only node observer is allowed to do in the cluster: publish
+# observations, and read its own Node to own them. Deliberately absent: any
+# write access to Nodes or anything else — the node agent can never mutate
+# cluster state beyond observations. One honest caveat: create/patch cannot be
+# scoped to the agent's own node name, so a compromised node could publish an
+# observation under another node's name. That is the same trust model NFD's
+# workers carry; pinning the name to the caller's node (a CEL admission policy
+# over the bound token's node claim) is tracked as follow-up hardening.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "halo-operator.fullname" . }}-agent
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+rules:
+- apiGroups:
+  - amd.halo.glimmer.ai
+  resources:
+  - halonodeobservations
+  verbs:
+  - create
+  - patch
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "halo-operator.fullname" . }}-agent
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "halo-operator.fullname" . }}-agent
+subjects:
+- kind: ServiceAccount
+  name: {{ include "halo-operator.agentServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}
