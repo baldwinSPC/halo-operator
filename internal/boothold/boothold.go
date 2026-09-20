@@ -210,3 +210,76 @@ func notObservedMessage(obs Observation) string {
 	return strings.Join(parts, "; ") +
 		" — an unread file is not a file without " + HoldToken
 }
+
+// NodeResult pairs a node with its verdict.
+type NodeResult struct {
+	Node string
+	Result
+}
+
+// Summary is the fleet-wide answer for one config.
+type Summary struct {
+	Verdict Verdict
+	Reason  string
+	Message string
+}
+
+// Summarize reduces per-node results to one verdict.
+//
+// CLEARED REQUIRES EVERY NODE. One node that could not be read is enough to
+// deny it, because the condition is about the fleet the config targets and an
+// unread node is not a cleared node. That is the only ordering choice here that
+// can be wrong in the dangerous direction.
+//
+// Above that, a definite problem outranks an unknown: a node still holding
+// boots is actionable now, and reporting Unknown because a DIFFERENT node could
+// not be read would bury it. The message still says how many were unreadable,
+// so the unknown is not lost — it is just not the headline.
+func Summarize(results []NodeResult) Summary {
+	if len(results) == 0 {
+		return Summary{
+			Verdict: NotObserved,
+			Reason:  "NotObserved",
+			Message: "no node was observed, so whether the boot hold is cleared is unknown",
+		}
+	}
+
+	var held, pending, unknown []string
+	for _, r := range results {
+		switch r.Verdict {
+		case Held:
+			held = append(held, r.Node)
+		case RebootPending:
+			pending = append(pending, r.Node)
+		case NotObserved:
+			unknown = append(unknown, r.Node)
+		}
+	}
+	sort.Strings(held)
+	sort.Strings(pending)
+	sort.Strings(unknown)
+
+	switch {
+	case len(held) > 0:
+		return Summary{Verdict: Held, Reason: "BootHoldPresent",
+			Message: fmt.Sprintf("%d of %d node(s) still carry %s in a boot configuration file: %s%s",
+				len(held), len(results), HoldToken, strings.Join(held, ", "), unobservedSuffix(unknown))}
+	case len(pending) > 0:
+		return Summary{Verdict: RebootPending, Reason: "RebootPending",
+			Message: fmt.Sprintf("%d of %d node(s) are clear of %s on disk and still running a kernel booted with it: %s%s",
+				len(pending), len(results), HoldToken, strings.Join(pending, ", "), unobservedSuffix(unknown))}
+	case len(unknown) > 0:
+		return Summary{Verdict: NotObserved, Reason: "NotObserved",
+			Message: fmt.Sprintf("%d of %d node(s) could not be read, so the boot hold is not established for them: %s",
+				len(unknown), len(results), strings.Join(unknown, ", "))}
+	}
+	return Summary{Verdict: Cleared, Reason: "BootHoldCleared",
+		Message: fmt.Sprintf("all %d node(s) are clear of %s and were booted without it", len(results), HoldToken)}
+}
+
+func unobservedSuffix(unknown []string) string {
+	if len(unknown) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (%d further node(s) could not be read: %s)", len(unknown), strings.Join(unknown, ", "))
+}

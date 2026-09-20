@@ -27,6 +27,7 @@ const (
 	componentMemoryPolicy   = "memory-policy"
 	componentRuntimeProfile = "runtime-profile"
 	componentHealthChecks   = "health-checks"
+	componentBootHold       = "boot-hold"
 )
 
 // HaloDeviceConfigReconciler reconciles a HaloDeviceConfig.
@@ -37,6 +38,11 @@ type HaloDeviceConfigReconciler struct {
 	// nil observer means no source is wired up, which is reported as
 	// NotObserved rather than quietly treated as compliance.
 	MemoryObserver NodeObserver
+
+	// BootHoldObserver reads the persisted boot configuration of the targeted
+	// nodes. Nil means no source is wired up, reported as NotObserved rather
+	// than quietly treated as a cleared hold.
+	BootHoldObserver BootHoldObserver
 
 	// HealthObserver reads the health signals of the targeted nodes. A nil
 	// observer is reported as NotObserved, never as a clean bill of health.
@@ -138,12 +144,14 @@ func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 
 	memoryStatus, memoryCondition := evaluateMemoryPolicy(ctx, r.MemoryObserver, &cfg, spec, now)
 	healthStatus, healthCondition := evaluateHealthChecks(ctx, r.HealthObserver, &cfg, spec, now)
+	bootHoldStatus, bootHoldCondition := evaluateBootHold(ctx, r.BootHoldObserver, &cfg, spec, now)
 
 	cfg.Status.ObservedGeneration = cfg.Generation
-	cfg.Status.Components = append([]halov1alpha1.ComponentStatus{memoryStatus, healthStatus},
+	cfg.Status.Components = append([]halov1alpha1.ComponentStatus{memoryStatus, healthStatus, bootHoldStatus},
 		componentStatuses(spec, now)...)
 	meta.SetStatusCondition(&cfg.Status.Conditions, memoryCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions, healthCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, bootHoldCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions,
 		readyCondition(cfg.Status.Components, cfg.Generation))
 

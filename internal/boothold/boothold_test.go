@@ -198,3 +198,77 @@ func TestDecide_AListingThatFailedIsNotAnEmptyOne(t *testing.T) {
 			"listing sends the reader to the autofs mount for a permissions problem", got.Message)
 	}
 }
+
+func res(node string, v Verdict) NodeResult {
+	return NodeResult{Node: node, Result: Result{Verdict: v, Reason: "r", Message: "m"}}
+}
+
+func TestSummarize_EveryNodeClearedIsCleared(t *testing.T) {
+	got := Summarize([]NodeResult{res("a", Cleared), res("b", Cleared)})
+	if got.Verdict != Cleared {
+		t.Fatalf("Verdict = %v, want Cleared", got.Verdict)
+	}
+}
+
+// THE PROPERTY. Cleared is about the fleet the config targets, and an unread
+// node is not a cleared node. One of them denies True.
+func TestSummarize_OneUnreadNodeDeniesCleared(t *testing.T) {
+	got := Summarize([]NodeResult{res("a", Cleared), res("b", NotObserved)})
+	if got.Verdict != NotObserved {
+		t.Fatalf("Verdict = %v, want NotObserved — every node that COULD be read was clear, "+
+			"which is exactly the state that tempts a fleet-wide True", got.Verdict)
+	}
+	if !strings.Contains(got.Message, "b") {
+		t.Errorf("Message = %q, want it to name the unread node", got.Message)
+	}
+}
+
+// A definite problem outranks an unknown, because it is actionable now — but
+// the unknown must not vanish, or the reader thinks the rest were fine.
+func TestSummarize_AHeldNodeOutranksAnUnreadOneAndNeitherIsLost(t *testing.T) {
+	got := Summarize([]NodeResult{res("a", Held), res("b", NotObserved), res("c", Cleared)})
+	if got.Verdict != Held {
+		t.Fatalf("Verdict = %v, want Held", got.Verdict)
+	}
+	if !strings.Contains(got.Message, "a") {
+		t.Errorf("Message = %q, want it to name the holding node", got.Message)
+	}
+	if !strings.Contains(got.Message, "b") {
+		t.Errorf("Message = %q, want it to STILL mention the unread node — a reader who sees only "+
+			"the holding node assumes the others were checked and clear", got.Message)
+	}
+}
+
+func TestSummarize_RebootPendingWhenNothingIsHeld(t *testing.T) {
+	got := Summarize([]NodeResult{res("a", RebootPending), res("b", Cleared)})
+	if got.Verdict != RebootPending {
+		t.Fatalf("Verdict = %v, want RebootPending", got.Verdict)
+	}
+}
+
+func TestSummarize_NoNodesIsNotObservedRatherThanCleared(t *testing.T) {
+	if got := Summarize(nil); got.Verdict != Cleared {
+		if got.Verdict != NotObserved {
+			t.Fatalf("Verdict = %v, want NotObserved", got.Verdict)
+		}
+	} else {
+		t.Fatal("Verdict = Cleared for an empty fleet — nothing was observed, so nothing is cleared")
+	}
+}
+
+func TestSummarize_EveryVerdictIsReachable(t *testing.T) {
+	seen := map[Verdict]bool{}
+	for _, in := range [][]NodeResult{
+		{res("a", Cleared)},
+		{res("a", Held)},
+		{res("a", RebootPending)},
+		{res("a", NotObserved)},
+	} {
+		seen[Summarize(in).Verdict] = true
+	}
+	for _, want := range []Verdict{Cleared, Held, RebootPending, NotObserved} {
+		if !seen[want] {
+			t.Errorf("verdict %v unreachable from any fleet fixture", want)
+		}
+	}
+}
