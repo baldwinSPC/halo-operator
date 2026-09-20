@@ -3,7 +3,10 @@
 
 package boothold
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func ptr(b bool) *bool { return &b }
 
@@ -176,7 +179,22 @@ func TestDecide_AListingThatFailedIsNotAnEmptyOne(t *testing.T) {
 	obs.LoaderEntriesListed = false
 	obs.LoaderEntriesFound = 0
 
-	if got := Decide(obs); got.Verdict != NotObserved {
+	got := Decide(obs)
+	if got.Verdict != NotObserved {
 		t.Fatalf("Verdict = %v, want NotObserved", got.Verdict)
+	}
+
+	// THE VERDICT ALONE CANNOT SEE THIS GUARD. A failed listing reports zero
+	// entries, so the zero-entry guard behind it returns NotObserved too and
+	// the verdict is right for the wrong reason. Measured: removing the
+	// listing guard alone reddens NOTHING until this assertion exists.
+	//
+	// The reason is what differs, and it is what a human acts on — "I could not
+	// list the directory" sends someone to permissions, "the listing came back
+	// empty" sends them to the autofs mount. Blaming the mount for a failed
+	// listing is a true verdict with a false explanation.
+	if !strings.Contains(got.Message, "could not be listed") {
+		t.Errorf("Message = %q, want it to name a FAILED listing; reporting this as an empty "+
+			"listing sends the reader to the autofs mount for a permissions problem", got.Message)
 	}
 }
