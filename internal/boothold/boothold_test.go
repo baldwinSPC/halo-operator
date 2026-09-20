@@ -18,25 +18,32 @@ func measuredFiles(held bool) []FileReading {
 	}
 }
 
-func TestDecide_ClearedNeedsCleanFilesAndACleanRunningKernel(t *testing.T) {
-	got := Decide(Observation{
+// measuredObs is the RAH-001 shape with the ESP successfully listed: two BLS
+// entries, which is what `sudo sh -c 'for f in /efi/loader/entries/*.conf'`
+// returns on that unit. Every fixture must state the ESP listing, because a
+// zero there is the autofs trap rather than a clean unit.
+func measuredObs(held bool, kernelHeld bool) Observation {
+	return Observation{
 		Node:                  "amd-halo",
-		RunningKernelHasToken: ptr(false),
-		Files:                 measuredFiles(false),
-	})
+		RunningKernelHasToken: ptr(kernelHeld),
+		Files:                 measuredFiles(held),
+		LoaderEntriesListed:   true,
+		LoaderEntriesFound:    2,
+	}
+}
+
+func TestDecide_ClearedNeedsCleanFilesAndACleanRunningKernel(t *testing.T) {
+	got := Decide(measuredObs(false, false))
 	if got.Verdict != Cleared {
 		t.Fatalf("Verdict = %v, want Cleared (%+v)", got.Verdict, got)
 	}
 }
 
 func TestDecide_AFileStillCarryingTheTokenIsHeldAndNamesIt(t *testing.T) {
-	files := measuredFiles(false)
-	files[1].HasToken = true
-	got := Decide(Observation{
-		Node:                  "amd-halo",
-		RunningKernelHasToken: ptr(false),
-		Files:                 files,
-	})
+	obs := measuredObs(false, false)
+	obs.Files[1].HasToken = true
+	files := obs.Files
+	got := Decide(obs)
 	if got.Verdict != Held {
 		t.Fatalf("Verdict = %v, want Held", got.Verdict)
 	}
@@ -49,11 +56,7 @@ func TestDecide_AFileStillCarryingTheTokenIsHeldAndNamesIt(t *testing.T) {
 // Clean files under a kernel that still carries the token. Glimmer's scan calls
 // this "staged": the edit landed and the unit has not restarted into it.
 func TestDecide_CleanFilesUnderACarryingKernelIsRebootPendingNotCleared(t *testing.T) {
-	got := Decide(Observation{
-		Node:                  "amd-halo",
-		RunningKernelHasToken: ptr(true),
-		Files:                 measuredFiles(false),
-	})
+	got := Decide(measuredObs(false, true))
 	if got.Verdict != RebootPending {
 		t.Fatalf("Verdict = %v, want RebootPending", got.Verdict)
 	}
@@ -72,6 +75,8 @@ func TestDecide_AnUnreadableFileIsNeverAFileWithoutTheToken(t *testing.T) {
 		RunningKernelHasToken: ptr(false),
 		Files:                 []FileReading{{Path: "/etc/kernel/cmdline", HasToken: false}},
 		Unreadable:            []string{"/efi/loader/entries/amd-ryzen-ai-developer-platform-6.18.44.conf: permission denied"},
+		LoaderEntriesListed:   true,
+		LoaderEntriesFound:    2,
 	})
 	if got.Verdict != NotObserved {
 		t.Fatalf("Verdict = %v, want NotObserved — every READABLE file was clean, which is exactly "+
@@ -83,7 +88,9 @@ func TestDecide_AnUnreadableFileIsNeverAFileWithoutTheToken(t *testing.T) {
 }
 
 func TestDecide_AnUnreadableRunningKernelIsNotObserved(t *testing.T) {
-	got := Decide(Observation{Node: "amd-halo", Files: measuredFiles(false)})
+	obs := measuredObs(false, false)
+	obs.RunningKernelHasToken = nil
+	got := Decide(obs)
 	if got.Verdict != NotObserved {
 		t.Fatalf("Verdict = %v, want NotObserved", got.Verdict)
 	}
@@ -91,7 +98,9 @@ func TestDecide_AnUnreadableRunningKernelIsNotObserved(t *testing.T) {
 
 // An agent that reported no sources at all is not a clean node.
 func TestDecide_NoFilesReportedIsNotObservedRatherThanCleared(t *testing.T) {
-	got := Decide(Observation{Node: "amd-halo", RunningKernelHasToken: ptr(false)})
+	obs := measuredObs(false, false)
+	obs.Files = nil
+	got := Decide(obs)
 	if got.Verdict != NotObserved {
 		t.Fatalf("Verdict = %v, want NotObserved — no file was read, so nothing supports Cleared", got.Verdict)
 	}
@@ -102,11 +111,13 @@ func TestDecide_NoFilesReportedIsNotObservedRatherThanCleared(t *testing.T) {
 // nothing else in this file would notice.
 func TestDecide_EveryVerdictIsReachable(t *testing.T) {
 	seen := map[Verdict]bool{}
+	autofs := measuredObs(false, false)
+	autofs.LoaderEntriesFound = 0
 	for _, obs := range []Observation{
-		{RunningKernelHasToken: ptr(false), Files: measuredFiles(false)},
-		{RunningKernelHasToken: ptr(false), Files: measuredFiles(true)},
-		{RunningKernelHasToken: ptr(true), Files: measuredFiles(false)},
-		{RunningKernelHasToken: ptr(false), Files: measuredFiles(false), Unreadable: []string{"x: permission denied"}},
+		measuredObs(false, false),
+		measuredObs(true, false),
+		measuredObs(false, true),
+		autofs,
 	} {
 		seen[Decide(obs).Verdict] = true
 	}
@@ -120,16 +131,52 @@ func TestDecide_EveryVerdictIsReachable(t *testing.T) {
 // Every non-Cleared verdict must say something a human can act on. A blank
 // message turns a False condition into a puzzle.
 func TestDecide_EveryVerdictCarriesAMessage(t *testing.T) {
+	autofs := measuredObs(false, false)
+	autofs.LoaderEntriesFound = 0
 	for _, obs := range []Observation{
-		{RunningKernelHasToken: ptr(false), Files: measuredFiles(false)},
-		{RunningKernelHasToken: ptr(false), Files: measuredFiles(true)},
-		{RunningKernelHasToken: ptr(true), Files: measuredFiles(false)},
-		{RunningKernelHasToken: ptr(false), Files: measuredFiles(false), Unreadable: []string{"x: permission denied"}},
+		measuredObs(false, false),
+		measuredObs(true, false),
+		measuredObs(false, true),
+		autofs,
 		{},
 	} {
 		got := Decide(obs)
 		if got.Message == "" || got.Reason == "" {
 			t.Errorf("Decide(%+v) = %+v, want a non-empty Reason and Message", obs, got)
 		}
+	}
+}
+
+// The autofs trap, measured on RAH-001 by the AMD parity lane. /efi is an
+// autofs mount; a container that has not triggered it sees an EMPTY directory.
+// No error and no permission denial — the listing simply returns nothing, on a
+// unit whose two entries both carry the token.
+//
+// A zero here must NOT reach Cleared. That would be True on the condition for a
+// unit that holds every boot: the wrong value, not a missing one.
+func TestDecide_AnUntriggeredAutofsMountIsNotObservedRatherThanCleared(t *testing.T) {
+	obs := measuredObs(false, false)
+	obs.Files = []FileReading{{Path: "/etc/kernel/cmdline", HasToken: false}}
+	obs.LoaderEntriesFound = 0
+
+	got := Decide(obs)
+	if got.Verdict != NotObserved {
+		t.Fatalf("Verdict = %v, want NotObserved — an empty loader-entries listing on a booted BLS "+
+			"unit is an untriggered mount, and Cleared here reports True for a unit that holds every boot", got.Verdict)
+	}
+}
+
+// The same zero by the other route: the glob is expanded by the UNPRIVILEGED
+// shell before sudo runs, /efi/loader/entries is mode 0700, so it matches
+// nothing. `sudo grep -l splash /efi/loader/entries/*.conf | wc -l` returns 0
+// on a unit where the correct answer is 2.
+func TestDecide_AListingThatFailedIsNotAnEmptyOne(t *testing.T) {
+	obs := measuredObs(false, false)
+	obs.Files = []FileReading{{Path: "/etc/kernel/cmdline", HasToken: false}}
+	obs.LoaderEntriesListed = false
+	obs.LoaderEntriesFound = 0
+
+	if got := Decide(obs); got.Verdict != NotObserved {
+		t.Fatalf("Verdict = %v, want NotObserved", got.Verdict)
 	}
 }

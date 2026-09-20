@@ -57,6 +57,31 @@ type Observation struct {
 	// Reading /efi/loader/entries needs root; an unprivileged read gets
 	// "permission denied", which is NOT evidence that the entries are clean.
 	Unreadable []string
+
+	// LoaderEntriesListed says the agent successfully enumerated
+	// /efi/loader/entries. A failed listing is not an empty one.
+	LoaderEntriesListed bool
+
+	// LoaderEntriesFound is how many entry files that listing returned.
+	//
+	// ZERO IS NOT A CLEAN ANSWER and this field exists only to say so. A Boot
+	// Loader Specification system boots from these files, so a unit that is
+	// running has at least one; a listing that returns none has failed without
+	// erroring. Measured on RAH-001, two ways to get that zero:
+	//
+	//   /efi is an autofs mount (systemd-1 -> /dev/nvme0n1p1, vfat). A
+	//   container mounting the path sees an EMPTY DIRECTORY unless the mount
+	//   has already been triggered. No error, no permission denial, no entries.
+	//
+	//   /efi/loader/entries is mode 0700 root-only, so a glob expanded by an
+	//   unprivileged shell matches nothing before a privileged command ever
+	//   runs -- `sudo grep -l splash /efi/loader/entries/*.conf` reports 0 on a
+	//   unit whose entries both carry it.
+	//
+	// Both produce a blank that reads as a measurement, and both push the
+	// verdict to Cleared, which is True on the condition. That is the wrong
+	// value rather than a missing one.
+	LoaderEntriesFound int
 }
 
 // Verdict is what an observation supports.
@@ -109,6 +134,21 @@ func Decide(obs Observation) Result {
 			Verdict: NotObserved,
 			Reason:  "NotObserved",
 			Message: notObservedMessage(obs),
+		}
+	}
+	if !obs.LoaderEntriesListed {
+		return Result{
+			Verdict: NotObserved,
+			Reason:  "NotObserved",
+			Message: "the loader entries directory could not be listed, so whether any entry carries " + HoldToken + " is unknown",
+		}
+	}
+	if obs.LoaderEntriesFound == 0 {
+		return Result{
+			Verdict: NotObserved,
+			Reason:  "NotObserved",
+			Message: "the loader entries listing returned no entries; a running Boot Loader Specification unit has at least one, " +
+				"so this is an untriggered autofs mount or a directory the agent cannot enter, not a unit without " + HoldToken,
 		}
 	}
 	if len(obs.Files) == 0 {
