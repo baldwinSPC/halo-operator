@@ -83,6 +83,70 @@ type HaloNodeObservationSpec struct {
 	// these; absence itself carries the semantics.
 	// +optional
 	Messages []string `json:"messages,omitempty"`
+
+	// BootHold is what the agent read about the boot hold — the `splash`
+	// token that makes a headless unit wait for a display it does not have.
+	//
+	// The running kernel's own command line is KernelCmdline above; this
+	// carries only the PERSISTED sources, which decide the NEXT boot.
+	// +optional
+	BootHold *BootHoldReading `json:"bootHold,omitempty"`
+}
+
+// BootHoldReading is the persisted boot configuration, as the agent found it.
+//
+// It is a struct rather than loose fields because the readings are only
+// meaningful together: whether a file carries the token means nothing without
+// knowing whether every file was seen.
+type BootHoldReading struct {
+	// EtcKernelCmdline is the verbatim contents of /etc/kernel/cmdline, absent
+	// when it could not be read. Measured on RAH-001 it carries a leading and
+	// a trailing space, so it is stored unmodified and parsed by the reader.
+	// +optional
+	EtcKernelCmdline *string `json:"etcKernelCmdline,omitempty"`
+
+	// LoaderEntriesListed says the agent successfully listed the loader
+	// entries directory. Absent when the agent did not attempt it; false when
+	// the listing itself failed.
+	//
+	// A FAILED LISTING IS NOT AN EMPTY ONE, and this field is the only thing
+	// that distinguishes them. `filepath.Glob` cannot: it returns the same
+	// empty slice and nil error for a missing directory, an unreadable one and
+	// an empty one.
+	// +optional
+	LoaderEntriesListed *bool `json:"loaderEntriesListed,omitempty"`
+
+	// LoaderEntriesFound is how many entry files the listing returned.
+	//
+	// It may exceed len(LoaderEntries): the listing can succeed while
+	// individual entries cannot be opened, and those land in Unreadable. Zero
+	// is never an answer about the boot hold — a booted Boot Loader
+	// Specification unit has at least one entry, so a zero here is an
+	// untriggered autofs mount or a directory the agent cannot enter.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	LoaderEntriesFound *int32 `json:"loaderEntriesFound,omitempty"`
+
+	// LoaderEntries is one record per entry file the agent opened.
+	// +optional
+	LoaderEntries []LoaderEntryReading `json:"loaderEntries,omitempty"`
+
+	// Unreadable names every path the agent could not read, with the reason.
+	// Reading /efi/loader/entries needs root; a permission denial is NOT
+	// evidence that the entries are clean.
+	// +optional
+	Unreadable []string `json:"unreadable,omitempty"`
+}
+
+// LoaderEntryReading is one Boot Loader Specification type#1 entry.
+type LoaderEntryReading struct {
+	// Path is the file the agent opened, reported verbatim so a human is sent
+	// to the entry rather than to a category.
+	Path string `json:"path"`
+
+	// Options is the entry's `options` line, stored unmodified.
+	// +optional
+	Options string `json:"options,omitempty"`
 }
 
 // +kubebuilder:object:root=true

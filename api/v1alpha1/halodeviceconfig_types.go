@@ -117,6 +117,25 @@ const ConditionMemoryPolicyCompliant = "MemoryPolicyCompliant"
 // as a clean bill of health.
 const ConditionNodesHealthy = "NodesHealthy"
 
+// ConditionBootHoldCleared is True when no persisted boot configuration file
+// carries `splash` and the running kernel was booted without it, False when the
+// unit still holds boots, and Unknown when it could not be established.
+//
+// False has two reasons and they call for different actions: BootHoldPresent
+// means a file still carries the token and needs editing, RebootPending means
+// every file is clear and only a restart is outstanding — which is what
+// Glimmer's scan calls "staged".
+//
+// Unknown is reachable and required. The loader entries live on an autofs ESP
+// that a container can see as empty, and on a directory an unprivileged agent
+// cannot enter; both return nothing without erroring. Reporting True off that
+// is the wrong value rather than a missing one, so an unseen file leaves this
+// Unknown.
+//
+// The operator never edits the host. Removing the token is Glimmer's
+// signed-task path; this condition only reports.
+const ConditionBootHoldCleared = "BootHoldCleared"
+
 // HaloDeviceConfigStatus is the observed state of the config.
 type HaloDeviceConfigStatus struct {
 	// +optional
