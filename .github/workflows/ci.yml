@@ -9,18 +9,37 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # A self-hosted ARC scale set on the Spark cluster. It runs in Kubernetes
+    # container-hook mode with ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=true, so
+    # naming a container is mandatory, not stylistic — a job without one is
+    # rejected by the runner.
+    runs-on: glimmer-arm64-halo-operator
+    # Built by .github/workflows/runner-image.yml. It carries Go, helm, make
+    # and gcc, none of which the stock actions-runner image has.
+    #
+    # TODO: pin to a digest or commit SHA. The build workflow prints the exact
+    # tag to use as a ::notice:: on every push to main; :latest is here only
+    # until the first image lands, because a tag that moves under CI is a
+    # reproducibility hole this repository would not otherwise accept.
+    container: ghcr.io/baldwinspc/halo-operator-runner:latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
+      # No actions/setup-go: the runner image carries the toolchain, and
+      # GOTOOLCHAIN=auto fetches an exact match when go.mod requires a newer
+      # patch release than the baked one.
+      - name: The toolchain is present
+        # The chart render tests skip when helm is missing, and a silent skip
+        # is indistinguishable from a pass — so assert the tools before using
+        # them rather than discovering a gap as a green build that tested
+        # nothing. The runner image asserts the same set at build time; this is
+        # the check that the job is actually running in that image.
+        run: |
+          go version
+          helm version --short
+          make --version | head -1
+
       - name: Forbid glimmer imports
         run: make verify-no-glimmer-imports
-      - name: Helm is present
-        # The chart render tests skip when helm is missing. A silent skip is
-        # indistinguishable from a pass, so fail loudly instead.
-        run: helm version
 
       - name: Lint the Helm chart
         run: make helm-lint
