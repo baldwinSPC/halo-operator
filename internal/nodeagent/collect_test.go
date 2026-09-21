@@ -18,6 +18,8 @@ type fixture struct {
 	t        *testing.T
 	procRoot string
 	sysRoot  string
+	etcRoot  string
+	espRoot  string
 }
 
 const fixtureCmdline = "BOOT_IMAGE=/vmlinuz root=/dev/nvme0n1p2 amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856 quiet\n"
@@ -31,8 +33,16 @@ func newFixture(t *testing.T) *fixture {
 		t:        t,
 		procRoot: filepath.Join(root, "proc"),
 		sysRoot:  filepath.Join(root, "sys"),
+		etcRoot:  filepath.Join(root, "etc"),
+		espRoot:  filepath.Join(root, "efi"),
 	}
 	f.writeFile(filepath.Join(f.procRoot, "cmdline"), fixtureCmdline)
+	// A healthy node is readable in EVERY source the collector reads, and the
+	// boot-hold sources are two of them now. Leaving them out would make this
+	// fixture sample the HOST's /etc and /efi, which is how it first broke.
+	f.writeFile(filepath.Join(f.etcRoot, "kernel", "cmdline"), "root=/dev/nvme0n1p2 quiet\n")
+	f.writeFile(filepath.Join(f.espRoot, "loader", "entries", "fixture.conf"),
+		"title Fixture\noptions     root=/dev/nvme0n1p2 quiet\n")
 	f.addDevice("0000:c5:00.0", "0x1002", "0x030000", "amdgpu", map[string]string{
 		"mem_info_gtt_total": "133143986176\n", // 124 GiB
 		"gpu_busy_percent":   "97\n",
@@ -42,7 +52,7 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) collector() Collector {
-	return Collector{ProcRoot: f.procRoot, SysRoot: f.sysRoot}
+	return Collector{ProcRoot: f.procRoot, SysRoot: f.sysRoot, EtcRoot: f.etcRoot, ESPRoot: f.espRoot}
 }
 
 func (f *fixture) writeFile(path, content string) {

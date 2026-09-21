@@ -87,7 +87,16 @@ func haloNodeFixture(t *testing.T) nodeagent.Collector {
 	if err := os.Symlink(driver, filepath.Join(dev, "driver")); err != nil {
 		t.Fatal(err)
 	}
-	return nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot}
+	// The boot-hold sources are part of a readable node now. Without them this
+	// fixture reads the HOST's /etc and /efi, which is a fixture sampling the
+	// machine — green on a box that happens to have neither, red on one that
+	// has one of them.
+	etcRoot := filepath.Join(filepath.Dir(procRoot), "etc")
+	espRoot := filepath.Join(filepath.Dir(procRoot), "efi")
+	write(filepath.Join(etcRoot, "kernel", "cmdline"), "root=/dev/nvme0n1p2 quiet\n")
+	write(filepath.Join(espRoot, "loader", "entries", "fixture.conf"),
+		"title Fixture\noptions     root=/dev/nvme0n1p2 quiet\n")
+	return nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot, EtcRoot: etcRoot, ESPRoot: espRoot}
 }
 
 // createAMDNode registers a Node carrying the NFD label the default selector

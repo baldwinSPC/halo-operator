@@ -70,6 +70,7 @@ func buildObservation(nodeName string, nodeUID types.UID, r Reading, at metav1.T
 		Spec: halov1alpha1.HaloNodeObservationSpec{
 			ObservedAt:          at,
 			KernelCmdline:       r.KernelCmdline,
+			BootHold:            bootHoldSpec(r.BootHold),
 			GTTTotalBytes:       r.GTTTotalBytes,
 			GPUBusyPercent:      r.GPUBusyPercent,
 			SCLKMHz:             r.SCLKMHz,
@@ -79,4 +80,25 @@ func buildObservation(nodeName string, nodeUID types.UID, r Reading, at metav1.T
 			QueueCreateFailures: nil,
 		},
 	}
+}
+
+// bootHoldSpec lifts the collector's boot-hold reading into the API type.
+//
+// A nil reading stays nil: the field is absent when the agent did not look,
+// which is not the same as looking and finding nothing.
+func bootHoldSpec(r *BootHoldReading) *halov1alpha1.BootHoldReading {
+	if r == nil {
+		return nil
+	}
+	out := &halov1alpha1.BootHoldReading{
+		EtcKernelCmdline:    r.EtcKernelCmdline,
+		LoaderEntriesListed: r.LoaderEntriesListed,
+		LoaderEntriesFound:  r.LoaderEntriesFound,
+		Unreadable:          r.Unreadable,
+	}
+	for _, e := range r.LoaderEntries {
+		out.LoaderEntries = append(out.LoaderEntries,
+			halov1alpha1.LoaderEntryReading{Path: e.Path, Options: e.Options})
+	}
+	return out
 }

@@ -73,6 +73,14 @@ spec:
         - name: sys
           mountPath: /host/sys
           readOnly: true
+        # The boot hold's PERSISTED sources. Read-only, and the operator never
+        # writes them: removing `splash` is Glimmer's signed-task path.
+        - name: etc-kernel
+          mountPath: /host/etc/kernel
+          readOnly: true
+        - name: esp
+          mountPath: /host/efi
+          readOnly: true
       volumes:
       - name: proc-cmdline
         hostPath:
@@ -81,6 +89,26 @@ spec:
       - name: sys
         hostPath:
           path: /sys
+      - name: etc-kernel
+        hostPath:
+          path: /etc/kernel
+      # /efi is an AUTOFS mount on a Strix Halo unit (systemd-1 ->
+      # /dev/nvme0n1p1, vfat). A container can see this as an EMPTY directory
+      # until the mount is triggered — no error and no permission denial.
+      #
+      # That is handled rather than prevented: the agent reports the listing
+      # and its count separately, and the operator turns an empty listing into
+      # BootHoldCleared=Unknown, never True. An empty ESP is not a cleared
+      # unit.
+      #
+      # AND THE ENTRIES ARE MODE 0700, ROOT-ONLY. This agent runs
+      # runAsNonRoot with every capability dropped, so /efi/loader/entries is
+      # NOT readable as shipped and the condition stays Unknown. Granting the
+      # agent root to read boot entries is a privilege decision and is
+      # deliberately not made here — see halo-operator#13.
+      - name: esp
+        hostPath:
+          path: /efi
           type: Directory
       {{- with .Values.agent.nodeSelector }}
       nodeSelector:

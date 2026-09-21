@@ -54,6 +54,10 @@ type Reading struct {
 	SCLKMHz *int32
 	// RatedSCLKMHz is the top of the pp_dpm_sclk ladder.
 	RatedSCLKMHz *int32
+	// BootHold is the persisted boot configuration — /etc/kernel/cmdline and
+	// the Boot Loader Specification entries — which decides the NEXT boot.
+	// KernelCmdline above is the running one.
+	BootHold *BootHoldReading
 	// Messages explains every nil above.
 	Messages []string
 }
@@ -66,6 +70,15 @@ type Collector struct {
 	ProcRoot string
 	// SysRoot is where the host's /sys is visible, "/sys" by default.
 	SysRoot string
+	// EtcRoot is where the host's /etc is visible, "/etc" by default. Only
+	// <EtcRoot>/kernel/cmdline is ever read.
+	EtcRoot string
+	// ESPRoot is where the host's EFI system partition is visible, "/efi" by
+	// default. Only <ESPRoot>/loader/entries is ever listed.
+	//
+	// Mounting it read-only is the whole access this needs; the operator never
+	// writes a boot file.
+	ESPRoot string
 }
 
 // Collect performs one read of the node. It never fails as a whole: each
@@ -93,6 +106,17 @@ func (c Collector) Collect() Reading {
 		s := strings.TrimRight(string(raw), "\n\r \t")
 		r.KernelCmdline = &s
 	}
+
+	etcRoot := c.EtcRoot
+	if etcRoot == "" {
+		etcRoot = "/etc"
+	}
+	espRoot := c.ESPRoot
+	if espRoot == "" {
+		espRoot = "/efi"
+	}
+	r.BootHold = collectBootHold(etcRoot, espRoot)
+	r.Messages = append(r.Messages, bootHoldMessages(r.BootHold)...)
 
 	dev, msg := discoverAMDGPU(sysRoot)
 	if dev == "" {
