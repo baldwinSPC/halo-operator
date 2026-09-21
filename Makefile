@@ -68,3 +68,19 @@ helm-lint: ## Lint the Helm chart.
 helm-package: helm-lint ## Package the chart into dist/.
 	mkdir -p dist
 	helm package $(CHART_DIR) --destination dist
+
+##@ CI runner image
+
+# The image CI jobs run inside. Built and published by
+# .github/workflows/runner-image.yml; this target is for reproducing a build
+# locally when changing the Dockerfile. It builds for arm64 because that is
+# what the ARC scale set runs on — on an x86 machine this needs QEMU
+# (docker buildx create --use) and will be slow.
+RUNNER_IMAGE ?= ghcr.io/baldwinspc/halo-operator-runner
+RUNNER_TAG ?= dev
+
+.PHONY: runner-image
+runner-image: ## Build the CI runner image locally for linux/arm64.
+	docker buildx build --platform linux/arm64 \
+		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
+		--load images/runner
