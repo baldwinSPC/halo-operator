@@ -46,6 +46,11 @@ type Reading struct {
 	// KernelCmdline is the raw contents of <procRoot>/cmdline, whitespace
 	// trimmed at the end only.
 	KernelCmdline *string
+	// ModuleParams is the running value of each readable parameter of the
+	// modules in moduleParamModules, keyed as the kernel command line would
+	// name it ("ttm.pages_limit"). Nil when no module directory could be read
+	// at all; a key is absent when that one parameter could not be read.
+	ModuleParams map[string]string
 	// GTTTotalBytes is mem_info_gtt_total for the discovered amdgpu device.
 	GTTTotalBytes *int64
 	// GPUBusyPercent is gpu_busy_percent for the discovered amdgpu device.
@@ -94,6 +99,10 @@ func (c Collector) Collect() Reading {
 		r.KernelCmdline = &s
 	}
 
+	params, paramMsgs := readModuleParams(sysRoot)
+	r.ModuleParams = params
+	r.Messages = append(r.Messages, paramMsgs...)
+
 	dev, msg := discoverAMDGPU(sysRoot)
 	if dev == "" {
 		r.Messages = append(r.Messages, msg)
@@ -139,6 +148,72 @@ func (c Collector) Collect() Reading {
 	// node. Absent readings keep those probes honestly NotObserved.
 
 	return r
+}
+
+// moduleParamModules are the modules whose running parameters govern unified
+// memory on this hardware, and so the only ones read. The list is fixed rather
+// than derived from the policy because the agent does not see policies — and
+// because an agent that read an arbitrary caller-named path under /sys would
+// be a different, larger thing than this one.
+var moduleParamModules = []string{"amdgpu", "ttm"}
+
+// readModuleParams reads the running value of every readable parameter of
+// moduleParamModules, keyed as the kernel command line would name it.
+//
+// This exists because the command line is not the only way these parameters
+// get set. The AMD Ryzen AI Developer Platform ships a ttm-config.service that
+// writes /etc/modprobe.d/ttm.conf, so on a correctly configured unit
+// ttm.pages_limit is set and yet appears nowhere on /proc/cmdline. A policy
+// checked against the command line alone calls that node drifted forever.
+//
+// The running value is read rather than modprobe.d parsed, for the same reason
+// the GTT ceiling is read rather than computed: it is what is actually in
+// effect, and it needs no parser for a config-file format with includes,
+// aliases and precedence rules.
+//
+// Unreadable parameters are simply absent, which the decision packages treat
+// as "not observed". That is routine rather than exceptional here:
+// /sys/module/amdgpu/parameters/* is mode 0400 on this platform and this agent
+// is deliberately unprivileged, so amdgpu's parameters are expected to be
+// missing. A nil map means not one module directory could be read.
+func readModuleParams(sysRoot string) (map[string]string, []string) {
+	var (
+		params   map[string]string
+		messages []string
+	)
+	for _, module := range moduleParamModules {
+		dir := filepath.Join(sysRoot, "module", module, "parameters")
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			// A module that is not loaded has no directory. That is a fact
+			// about the node, not a failure of the agent, so it is reported
+			// as a message and leaves every parameter of that module absent.
+			messages = append(messages, fmt.Sprintf("module %s: %v", module, err))
+			continue
+		}
+		if params == nil {
+			params = map[string]string{}
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				// The common case, and not worth a message per parameter:
+				// most of these files are mode 0400 and there are dozens.
+				continue
+			}
+			value := strings.TrimSpace(string(raw))
+			if strings.ContainsAny(value, "\n\r") {
+				// A multi-line parameter is not something a command-line
+				// comparison can mean anything about.
+				continue
+			}
+			params[module+"."+entry.Name()] = value
+		}
+	}
+	return params, messages
 }
 
 // discoverAMDGPU finds the single amdgpu-driven GPU on the node and returns

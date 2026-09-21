@@ -64,8 +64,9 @@ See [config/samples/](config/samples/) for an example resource.
 Nothing in the controller touches a node. A separate **node observation
 agent** runs as a DaemonSet on every AMD GPU node (placed by the
 `feature.node.kubernetes.io/amd-gpu` label NFD applies), reads the kernel
-command line and the documented amdgpu sysfs counters — read-only,
-unprivileged, two narrow host mounts — and publishes what it read as a
+command line, the running values of the amdgpu and ttm module parameters, and
+the documented amdgpu sysfs counters — read-only, unprivileged, two narrow host
+mounts — and publishes what it read as a
 **`HaloNodeObservation`** (cluster-scoped, named after the node, owned by the
 Node object so node deletion garbage-collects it). The controller lists the
 targeted Nodes, joins observations by name, and judges the result:
@@ -94,34 +95,65 @@ The kernel command line is published raw and parsed controller-side, so
 "read fine, nothing set" (empty) and "could not read" (absent) stay distinct
 through serialization, and parse-rule fixes ship without redeploying agents.
 
-## Hardware validation pending
+**The command line is not the only place a parameter is set**, which is why
+the running module parameters are read too. On the AMD Ryzen AI Developer
+Platform the shipped `ttm-config.service` writes `/etc/modprobe.d/ttm.conf`, so
+a correctly sized unit has `ttm.pages_limit` in effect and carries it nowhere
+on `/proc/cmdline`; judged by the command line alone that node reports drift
+forever. An expected parameter therefore resolves from the command line first —
+that is what the fleet asked for at boot — and falls back to the module's
+running value under `/sys/module`. The asymmetry between the two missing cases
+is deliberate: a core-kernel parameter missing from a command line that *was*
+read is observed absence and so is drift, while a module parameter missing from
+the command line proves nothing until the module's own value has been checked.
+That value is often unreadable — `/sys/module/amdgpu/parameters/*` is mode 0400
+and this agent is unprivileged — and an unreadable parameter reports
+`NotObserved`, never drift. Accusing a node on the strength of a permission
+error is precisely the failure this design refuses.
 
-The physical Halo units have not arrived. Everything the agent reads is
-**documented kernel ABI** (`mem_info_gtt_total`, `gpu_busy_percent`,
-`pp_dpm_sclk`, PCI `vendor`/`class`/`driver`), but how the first real gfx1151
-unit presents that ABI — device enumeration, ladder format, whether the
-counters populate at all on an APU — is deliberately unverified until it can
-be read off hardware. The collector is strict on purpose: any deviation from
-the documented formats is reported as *not observed*, never guessed at.
-`/agent --once` exists for exactly that bring-up day.
+## Hardware validation
 
-Two consequences to know about:
+**The collector's reads are confirmed against a physical gfx1151** (AMD Ryzen
+AI Developer Platform, kernel `6.18.44+rex+5-amd64`, 2026-09-20). Everything it
+reads is **documented kernel ABI** (`mem_info_gtt_total`, `gpu_busy_percent`,
+`pp_dpm_sclk`, PCI `vendor`/`class`/`driver`), and how a real unit presents
+that ABI is no longer a guess:
 
-- **The kernel-log probes have no reader yet.** `permission-fault` and
+- **Device enumeration holds.** Exactly one amdgpu function, class `0x038000`.
+  Its sibling at the same PCI slot is *also* vendor `0x1002` but class
+  `0x040300` (`snd_hda_intel`) — the class filter is the only thing keeping
+  discovery at one candidate, so it must not be loosened.
+- **The counters populate on an APU.** `mem_info_gtt_total` reads
+  101139496960 (94 GiB after the floor to whole GiB); `gpu_busy_percent` reads
+  a real 0 at idle.
+- **The `pp_dpm_sclk` ladder parses.** Three levels, `600`/`1100`/`2900` MHz
+  with the current level starred. Note `pp_dpm_fclk` on the same part carries
+  **no** star on any level — a starless ladder is a real format, and the parser
+  reports the current clock as unread rather than inventing one.
+
+The collector is strict on purpose: any deviation from the documented formats
+is reported as *not observed*, never guessed at. `/agent --once` exists for
+bring-up.
+
+Two things stay unvalidated, and hardware arriving did not settle either:
+
+- **The kernel-log probes have no reader.** `permission-fault` and
   `queue-create` count dmesg lines whose exact formats are hardware facts;
   an unvalidated pattern that matches nothing would report "0 faults" — a
-  clean bill of health nobody measured. Until patterns are validated on a
-  real unit those counters are simply never published, the probes report
-  `NotObserved`, and a config using the default probe set holds
-  `NodesHealthy` at `Unknown`. Scope `healthChecks.probes` to
+  clean bill of health nobody measured. The unit on hand has never emitted
+  one of these faults, so there is nothing to validate a pattern *against*:
+  this is blocked by the absence of a failure, not by the absence of
+  hardware. Until the patterns are validated those counters are never
+  published, the probes report `NotObserved`, and a config using the default
+  probe set holds `NodesHealthy` at `Unknown`. Scope `healthChecks.probes` to
   `[clock-under-load]` if you want that condition decidable today.
 - **Multi-GPU nodes are not chosen between.** With more than one
   amdgpu-driven device the agent publishes no counters rather than silently
-  picking one; selection policy waits for hardware.
+  picking one. The available unit is single-GPU, so this is still unsettled.
 
-No claim of hardware validation is made anywhere in this repository, and
-issues #4/#5 stay open until a condition reaches `True` against a physical
-node.
+The claim made here is narrow and deliberate: the agent's *reads* are
+confirmed on a physical gfx1151. No condition has yet reached `True` against a
+node under Kubernetes management, so issues #4/#5 remain open.
 
 ## Project boundaries
 
