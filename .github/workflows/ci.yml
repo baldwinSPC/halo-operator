@@ -35,17 +35,27 @@ jobs:
       # "error obtaining VCS status: exit status 128" and names neither git nor
       # ownership.
       #
-      # actions/checkout is documented to set a safe.directory exception, and it
-      # is not in effect by the time later steps run. Measured inside this job:
+      # actions/checkout DOES set a safe.directory exception. It is simply not
+      # in scope for any later step, and its own log says why — verbatim from
+      # the checkout step of this workflow:
       #
-      #   HOME=[/root]                       stable, not unset and not moved
-      #   uid=0  owner_of_pwd=1001           the mismatch, confirmed
-      #   /root/.gitconfig  exists=no        no global exception exists at all
+      #   Temporarily overriding HOME='/__w/_temp/<uuid>' before making global
+      #     git config changes
+      #   Adding repository directory to the temporary git global config as a
+      #     safe directory
+      #   [command]/usr/bin/git config --global --add safe.directory
+      #     /__w/halo-operator/halo-operator
       #
-      # So the reason is simply that nothing persists it — not, as this comment
-      # previously claimed, that HOME is unstable. Passing the exception through
-      # the environment is what makes it survive, because the environment is the
-      # one thing every step inherits.
+      # The exception goes into a global config under a THROWAWAY HOME that
+      # checkout overrides for its own git commands and then discards. Measured
+      # in a later step: HOME=[/root], stable, and /root/.gitconfig does not
+      # exist — so the exception was never written anywhere the build can see.
+      # Note the step's HOME does not move; it is checkout's HOME that is
+      # temporary, which is a different claim and the one the evidence supports.
+      #
+      # Passing the exception through the environment is what makes it reach
+      # every step, because the environment is inherited and depends on no HOME
+      # at all.
       #
       # Scoped to the workspace rather than "*": "*" switches git's ownership
       # check off wholesale, which is a different thing from making one
@@ -55,7 +65,7 @@ jobs:
       # (/home/runner/_work/...), not this container's. It still works because
       # the runner path-translates env values into container jobs — measured,
       # git reports the exception as /__w/halo-operator/halo-operator. Prefer it
-      # over hardcoding /__w/... , which would be an undocumented internal path.
+      # over hardcoding /__w/... , which is an undocumented internal path.
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: safe.directory
       GIT_CONFIG_VALUE_0: ${{ github.workspace }}
