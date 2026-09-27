@@ -27,6 +27,28 @@ jobs:
     # To move it: merge a change under images/runner/, then take the tag the
     # build workflow prints as a ::notice:: and update this line.
     container: ghcr.io/baldwinspc/halo-operator-runner:a4ea6ba1a7c43b30815158d64bfa1f1cc663dd77
+    env:
+      # The workspace volume is populated by the runner container as uid 1001,
+      # and this job container runs as root — so git refuses every operation in
+      # it with "detected dubious ownership" and exit 128. That surfaces in the
+      # least obvious place possible: `go build` shells out to git to stamp VCS
+      # info, so the failure reads "error obtaining VCS status: exit status
+      # 128" with no mention of ownership at all.
+      #
+      # actions/checkout already sets safe.directory for us, and it is NOT
+      # enough here. It writes the exception with `git config --global`, which
+      # lands in $HOME/.gitconfig — and the container hook execs each step
+      # without a stable HOME, so a later step does not read that file.
+      # Measured: with HOME unset, the --global exception still fails 128 while
+      # the env form below succeeds.
+      #
+      # Passing it through the environment therefore beats configuring it,
+      # because the environment is the one thing every step inherits. "*" is
+      # blunt but correct for the context: this is a single-tenant ephemeral
+      # job pod, and being env-scoped it writes nothing to any config file.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: "*"
     steps:
       - uses: actions/checkout@v4
       # No actions/setup-go: the runner image carries the toolchain, and
