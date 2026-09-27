@@ -53,9 +53,12 @@ jobs:
           context: images/runner
           platforms: linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ env.IMAGE }}:${{ github.sha }}
-            ${{ env.IMAGE }}:latest
+          # The commit SHA and nothing else. A ":latest" alongside it would be
+          # a mutable reference sitting in the registry waiting to be consumed,
+          # and the whole point of scripts/ci-runner-pin-check.sh is that no
+          # workflow consumes one. Publishing a tag nobody may use is just an
+          # invitation to use it.
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

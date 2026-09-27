@@ -84,3 +84,7 @@ runner-image: ## Build the CI runner image locally for linux/arm64.
 	docker buildx build --platform linux/arm64 \
 		-t $(RUNNER_IMAGE):$(RUNNER_TAG) \
 		--load images/runner
+
+.PHONY: verify-runner-pin
+verify-runner-pin: ## Assert every workflow job container is pinned to an immutable reference.
+	./scripts/ci-runner-pin-check.sh

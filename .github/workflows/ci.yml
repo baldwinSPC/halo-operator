@@ -17,11 +17,16 @@ jobs:
     # Built by .github/workflows/runner-image.yml. It carries Go, helm, make
     # and gcc, none of which the stock actions-runner image has.
     #
-    # TODO: pin to a digest or commit SHA. The build workflow prints the exact
-    # tag to use as a ::notice:: on every push to main; :latest is here only
-    # until the first image lands, because a tag that moves under CI is a
-    # reproducibility hole this repository would not otherwise accept.
-    container: ghcr.io/baldwinspc/halo-operator-runner:latest
+    # Pinned to the commit that built it, and scripts/ci-runner-pin-check.sh
+    # keeps it that way. A moving tag makes a green unnameable: ":latest"
+    # passing today says nothing about what runs tomorrow, and when it breaks
+    # there is no way to state which image was tested. A commit SHA is
+    # preferred over a bare digest because it is the one immutable form that
+    # can also be *named* — `git show a4ea6ba` explains what is in this image.
+    #
+    # To move it: merge a change under images/runner/, then take the tag the
+    # build workflow prints as a ::notice:: and update this line.
+    container: ghcr.io/baldwinspc/halo-operator-runner:a4ea6ba1a7c43b30815158d64bfa1f1cc663dd77
     steps:
       - uses: actions/checkout@v4
       # No actions/setup-go: the runner image carries the toolchain, and
@@ -40,6 +45,9 @@ jobs:
 
       - name: Forbid glimmer imports
         run: make verify-no-glimmer-imports
+
+      - name: Job containers are immutably pinned
+        run: make verify-runner-pin
 
       - name: Lint the Helm chart
         run: make helm-lint
