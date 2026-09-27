@@ -28,32 +28,51 @@ jobs:
     # build workflow prints as a ::notice:: and update this line.
     container: ghcr.io/baldwinspc/halo-operator-runner:a4ea6ba1a7c43b30815158d64bfa1f1cc663dd77
     env:
-      # The workspace volume is populated by the runner container as uid 1001,
-      # and this job container runs as root — so git refuses every operation in
-      # it with "detected dubious ownership" and exit 128. That surfaces in the
-      # least obvious place possible: `go build` shells out to git to stamp VCS
-      # info, so the failure reads "error obtaining VCS status: exit status
-      # 128" with no mention of ownership at all.
+      # The job container runs as a uid that does not own the checkout, so git
+      # refuses every operation in it with "detected dubious ownership" and
+      # exit 128. That surfaces in the least obvious place available: `go build`
+      # shells out to git to stamp VCS info, so the failure reads "error
+      # obtaining VCS status: exit status 128" and names neither git nor
+      # ownership.
       #
-      # actions/checkout already sets safe.directory for us, and it is NOT
-      # enough here. It writes the exception with `git config --global`, which
-      # lands in $HOME/.gitconfig — and the container hook execs each step
-      # without a stable HOME, so a later step does not read that file.
-      # Measured: with HOME unset, the --global exception still fails 128 while
-      # the env form below succeeds.
+      # actions/checkout already sets a safe.directory exception and it does not
+      # stick. It writes one with `git config --global`, into $HOME/.gitconfig,
+      # and HOME does not survive to the steps that need it — so a later step
+      # reads a file that is no longer there. Passing the exception through the
+      # environment beats configuring it, because the environment is the one
+      # thing every step inherits.
       #
-      # Passing it through the environment therefore beats configuring it,
-      # because the environment is the one thing every step inherits. "*" is
-      # blunt but correct for the context: this is a single-tenant ephemeral
-      # job pod, and being env-scoped it writes nothing to any config file.
+      # Scoped to the workspace rather than "*": "*" switches git's ownership
+      # check off wholesale, which is a different thing from making one
+      # exception for the directory we put there ourselves.
+      #
+      # The exact HOME mechanism — reassigned to a temporary that is gone by the
+      # next step, versus absent outright — is being measured by the diagnostic
+      # step below; this comment will be narrowed to whichever it is. The fix
+      # holds under both, which is precisely why the wrong explanation could sit
+      # here indefinitely without anything going red.
       GIT_CONFIG_COUNT: "1"
       GIT_CONFIG_KEY_0: safe.directory
-      GIT_CONFIG_VALUE_0: "*"
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
       # No actions/setup-go: the runner image carries the toolchain, and
       # GOTOOLCHAIN=auto fetches an exact match when go.mod requires a newer
       # patch release than the baked one.
+      # TEMPORARY. Settles whether HOME is reassigned or absent inside the
+      # container hook's step execs, and whether github.workspace is the
+      # in-container path. Delete once the env comment above is narrowed.
+      - name: Diagnostic — HOME, workspace and cache derivation
+        run: |
+          echo "HOME=[${HOME:-<unset>}]"
+          echo "github.workspace=[${{ github.workspace }}]"
+          echo "GITHUB_WORKSPACE=[${GITHUB_WORKSPACE:-<unset>}]"
+          echo "PWD=[$PWD]  uid=$(id -u)  owner_of_pwd=$(stat -c %u . 2>/dev/null)"
+          echo "go env GOCACHE=[$(go env GOCACHE)]"
+          echo "go env GOPATH=[$(go env GOPATH)]"
+          echo "git global cfg file=[${HOME:-<unset>}/.gitconfig] exists=$([ -f "${HOME:-/nonexistent}/.gitconfig" ] && echo yes || echo no)"
+          echo "safe.directory as git sees it:"; git config --get-all safe.directory || echo "  (none)"
+
       - name: The toolchain is present
         # The chart render tests skip when helm is missing, and a silent skip
         # is indistinguishable from a pass — so assert the tools before using
