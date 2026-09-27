@@ -75,6 +75,11 @@ func (o *Observer) Observe(ctx context.Context, selector map[string]string) ([]m
 				// nil, "could not read", stays reserved for the nil field.
 				obs.KernelParams = memorypolicy.ParseKernelCmdline(*spec.KernelCmdline)
 			}
+			// Passed through as read. Unlike the command line there is nothing
+			// to parse — each entry is already one parameter and one value —
+			// and nil stays nil so "no module directory was readable" does not
+			// arrive as "read fine, nothing set".
+			obs.ModuleParams = spec.ModuleParams
 			obs.EffectiveGPUMemoryGiB = gibFloor(spec.GTTTotalBytes)
 		}
 		out = append(out, obs)

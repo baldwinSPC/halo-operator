@@ -38,7 +38,17 @@ func newFixture(t *testing.T) *fixture {
 		"gpu_busy_percent":   "97\n",
 		"pp_dpm_sclk":        fixtureLadder,
 	})
+	f.addModuleParams("ttm", map[string]string{"pages_limit": "32505856\n"})
+	f.addModuleParams("amdgpu", map[string]string{"gttsize": "126976\n"})
 	return f
+}
+
+// addModuleParams creates /sys/module/<module>/parameters/<name> files.
+func (f *fixture) addModuleParams(module string, params map[string]string) {
+	f.t.Helper()
+	for name, content := range params {
+		f.writeFile(filepath.Join(f.sysRoot, "module", module, "parameters", name), content)
+	}
 }
 
 func (f *fixture) collector() Collector {
@@ -339,3 +349,78 @@ func TestParseSCLKLadder(t *testing.T) {
 }
 
 func i32(v int32) *int32 { return &v }
+
+// TestCollectReadsModuleParams pins the reading that makes a modprobe.d-
+// configured node judgeable at all. On the AMD Ryzen AI Developer Platform
+// ttm.pages_limit is set by /etc/modprobe.d/ttm.conf and appears nowhere on
+// the kernel command line, so the running value is the only observation of it
+// that exists.
+func TestCollectReadsModuleParams(t *testing.T) {
+	f := newFixture(t)
+	r := f.collector().Collect()
+
+	if r.ModuleParams == nil {
+		t.Fatalf("module parameters were not read at all: %v", r.Messages)
+	}
+	for key, want := range map[string]string{
+		"ttm.pages_limit": "32505856",
+		"amdgpu.gttsize":  "126976",
+	} {
+		if got, ok := r.ModuleParams[key]; !ok {
+			t.Errorf("%s missing from module parameters %v", key, r.ModuleParams)
+		} else if got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestUnreadableModuleParamIsAbsentNotEmpty is the real hardware case:
+// /sys/module/amdgpu/parameters/* is mode 0400 and this agent is deliberately
+// unprivileged, so amdgpu's parameters are routinely unreadable. An unreadable
+// parameter must be ABSENT, because the decision packages read absence as "not
+// observed" and an empty string would compare unequal to any expected value
+// and so read as drift — accusing a node on the strength of a permission
+// error.
+func TestUnreadableModuleParamIsAbsentNotEmpty(t *testing.T) {
+	f := newFixture(t)
+	path := filepath.Join(f.sysRoot, "module", "amdgpu", "parameters", "gttsize")
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, which can read a 0000 file")
+	}
+
+	r := f.collector().Collect()
+
+	if _, present := r.ModuleParams["amdgpu.gttsize"]; present {
+		t.Errorf("an unreadable parameter was published as %q; it must be absent",
+			r.ModuleParams["amdgpu.gttsize"])
+	}
+	// The readable module is unaffected: absence is per-parameter, not
+	// all-or-nothing.
+	if got := r.ModuleParams["ttm.pages_limit"]; got != "32505856" {
+		t.Errorf("ttm.pages_limit = %q, want it still readable", got)
+	}
+}
+
+// TestNoModuleDirectoriesYieldsNilNotEmptyMap keeps the nil/empty distinction
+// the whole three-valued chain rests on. A node where neither module is loaded
+// must produce nil, not an empty map, so the controller reads "nothing could
+// be observed" rather than "observed, nothing set".
+func TestNoModuleDirectoriesYieldsNilNotEmptyMap(t *testing.T) {
+	f := newFixture(t)
+	if err := os.RemoveAll(filepath.Join(f.sysRoot, "module")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.collector().Collect()
+
+	if r.ModuleParams != nil {
+		t.Errorf("ModuleParams = %v, want nil when no module directory is readable", r.ModuleParams)
+	}
+	if len(r.Messages) == 0 {
+		t.Error("no message explained why the module parameters are absent")
+	}
+}

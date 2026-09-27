@@ -153,15 +153,73 @@ func TestEvaluate(t *testing.T) {
 			wantVerdict: VerdictCompliant,
 		},
 		{
-			name:   "an empty command line that was read is drift for every expected parameter",
+			name: "an empty command line is drift for a core parameter but not for module parameters",
+			// A core-kernel parameter lives on the command line alone, so a
+			// command line that was read and does not carry it is a real
+			// observation of absence. A module parameter also has a running
+			// value under /sys/module, which was not read here, so its absence
+			// from the command line proves nothing.
 			policy: haloDefaults,
 			observation: Observation{
 				Node:                  "halo-1",
 				KernelParams:          map[string]string{},
 				EffectiveGPUMemoryGiB: gib(124),
 			},
+			wantVerdict:    VerdictDrifted,
+			wantDrifts:     1,
+			wantUnobserved: 2,
+		},
+		{
+			name: "a module parameter set by modprobe.d rather than the command line is compliant",
+			// The shape of the real AMD Ryzen AI Developer Platform: the
+			// platform's ttm-config.service writes /etc/modprobe.d/ttm.conf,
+			// so ttm.pages_limit is never on the command line and the running
+			// value is the only place it can be observed.
+			policy: Policy{ExpectedKernelArgs: map[string]string{"ttm.pages_limit": "24692260"}},
+			observation: Observation{
+				Node:         "amd-halo",
+				KernelParams: map[string]string{},
+				ModuleParams: map[string]string{"ttm.pages_limit": "24692260"},
+			},
+			wantVerdict: VerdictCompliant,
+		},
+		{
+			name:   "a module parameter whose running value disagrees is drift",
+			policy: Policy{ExpectedKernelArgs: map[string]string{"ttm.pages_limit": "32505856"}},
+			observation: Observation{
+				Node:         "amd-halo",
+				KernelParams: map[string]string{},
+				ModuleParams: map[string]string{"ttm.pages_limit": "24692260"},
+			},
 			wantVerdict: VerdictDrifted,
-			wantDrifts:  3,
+			wantDrifts:  1,
+		},
+		{
+			name: "an unreadable module parameter is never drift",
+			// /sys/module/amdgpu/parameters/* is mode 0400 and the agent is
+			// unprivileged, so this is the routine case, not an edge one.
+			// Accusing a node of drift on the strength of a permission error
+			// is the failure this whole package exists to avoid.
+			policy: Policy{ExpectedKernelArgs: map[string]string{"amdgpu.gttsize": "126976"}},
+			observation: Observation{
+				Node:         "amd-halo",
+				KernelParams: map[string]string{},
+				ModuleParams: map[string]string{"ttm.pages_limit": "24692260"},
+			},
+			wantVerdict:    VerdictNotObserved,
+			wantUnobserved: 1,
+		},
+		{
+			name: "the command line still wins over the running value",
+			// If both carry the parameter, the command line is what the fleet
+			// asked for and is the thing a drift report should name.
+			policy: Policy{ExpectedKernelArgs: map[string]string{"ttm.pages_limit": "32505856"}},
+			observation: Observation{
+				Node:         "amd-halo",
+				KernelParams: map[string]string{"ttm.pages_limit": "32505856"},
+				ModuleParams: map[string]string{"ttm.pages_limit": "24692260"},
+			},
+			wantVerdict: VerdictCompliant,
 		},
 	}
 
@@ -320,12 +378,17 @@ func TestParseKernelCmdline(t *testing.T) {
 }
 
 func TestFindingDescribe(t *testing.T) {
+	// Both rendering branches: a parameter set to the wrong value, and one
+	// observed absent. Absence is only ever observable for core-kernel
+	// parameters, which live on the command line alone — a module parameter
+	// missing from the command line might still be set by modprobe.d, so it
+	// resolves to unobserved rather than drift and never reaches Describe.
 	f := Evaluate(
-		Policy{ExpectedKernelArgs: map[string]string{"amd_iommu": "off", "amdgpu.gttsize": "126976"}},
+		Policy{ExpectedKernelArgs: map[string]string{"amd_iommu": "off", "nomodeset": ""}},
 		Observation{Node: "halo-1", KernelParams: map[string]string{"amd_iommu": "on"}},
 	)
 	got := f.Describe()
-	want := `amd_iommu expected "off" but was "on"; amdgpu.gttsize expected "126976" but was not set`
+	want := `amd_iommu expected "off" but was "on"; nomodeset expected "" but was not set`
 	if got != want {
 		t.Errorf("Describe() = %q, want %q", got, want)
 	}

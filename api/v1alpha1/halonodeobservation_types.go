@@ -35,6 +35,25 @@ type HaloNodeObservationSpec struct {
 	// +optional
 	KernelCmdline *string `json:"kernelCmdline,omitempty"`
 
+	// ModuleParams is the running value of each readable kernel module
+	// parameter that governs unified memory, keyed exactly as the kernel
+	// command line would name it — "ttm.pages_limit", "amdgpu.gttsize".
+	//
+	// It exists because the command line is not the only way such a parameter
+	// gets set, and on the AMD Ryzen AI Developer Platform it is not the way
+	// that is used: the platform's ttm-config.service writes
+	// /etc/modprobe.d/ttm.conf, so a correctly sized unit has ttm.pages_limit
+	// in effect and nowhere on /proc/cmdline. Judging that node by its command
+	// line alone reports permanent drift on a node that is exactly right.
+	//
+	// A key is absent when that one parameter could not be read, which is
+	// routine rather than exceptional: /sys/module/amdgpu/parameters/* is mode
+	// 0400 and the agent is unprivileged. The controller treats an absent key
+	// as not observed, never as unset — accusing a node of drift on the
+	// strength of a permission error is the failure this type exists to avoid.
+	// +optional
+	ModuleParams map[string]string `json:"moduleParams,omitempty"`
+
 	// GTTTotalBytes is the amdgpu GTT segment size in bytes, read from the
 	// device's mem_info_gtt_total. This is the node's effective GTT-visible
 	// GPU memory ceiling, the thing amdgpu.gttsize and ttm.pages_limit exist

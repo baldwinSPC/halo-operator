@@ -70,6 +70,7 @@ func buildObservation(nodeName string, nodeUID types.UID, r Reading, at metav1.T
 		Spec: halov1alpha1.HaloNodeObservationSpec{
 			ObservedAt:          at,
 			KernelCmdline:       r.KernelCmdline,
+			ModuleParams:        r.ModuleParams,
 			GTTTotalBytes:       r.GTTTotalBytes,
 			GPUBusyPercent:      r.GPUBusyPercent,
 			SCLKMHz:             r.SCLKMHz,

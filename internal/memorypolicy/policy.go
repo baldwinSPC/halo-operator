@@ -38,6 +38,19 @@ type Observation struct {
 	// KernelParams is the parsed kernel command line, or nil if it could not
 	// be read.
 	KernelParams map[string]string
+	// ModuleParams is the EFFECTIVE value of each readable kernel module
+	// parameter, keyed exactly as the kernel command line would name it —
+	// "ttm.pages_limit", "amdgpu.gttsize". It is nil when nothing could be
+	// read, and a key is absent when that one parameter could not be read,
+	// which on this hardware is routine: /sys/module/amdgpu/parameters/* is
+	// mode 0400 and the agent is unprivileged.
+	//
+	// This exists because the command line is not the only way a parameter
+	// gets set, and on the AMD Ryzen AI Developer Platform it is not the way
+	// that is used: the platform's own ttm-config.service writes
+	// /etc/modprobe.d/ttm.conf instead. Checking the command line alone would
+	// report permanent drift on a node that is configured exactly right.
+	ModuleParams map[string]string
 	// EffectiveGPUMemoryGiB is the GTT-visible GPU memory, or nil if it could
 	// not be read.
 	EffectiveGPUMemoryGiB *int32
@@ -90,23 +103,24 @@ func Evaluate(policy Policy, obs Observation) Finding {
 
 	for _, name := range sortedKeys(policy.ExpectedKernelArgs) {
 		expected := policy.ExpectedKernelArgs[name]
-		if obs.KernelParams == nil {
-			// The command line itself could not be read, so nothing can be
-			// said about any parameter on it.
+		actual, source := resolveParam(obs, name)
+		switch source {
+		case sourceUnreadable:
+			// Neither the command line nor — for a module parameter — the
+			// module's effective value could be read, so nothing can be said
+			// about this parameter.
 			finding.Unobserved = append(finding.Unobserved,
 				fmt.Sprintf("kernel parameter %q", name))
-			continue
-		}
-		actual, present := obs.KernelParams[name]
-		switch {
-		case !present:
+		case sourceUnset:
 			finding.Drifts = append(finding.Drifts, Drift{
 				Parameter: name, Expected: expected, Absent: true,
 			})
-		case actual != expected:
-			finding.Drifts = append(finding.Drifts, Drift{
-				Parameter: name, Expected: expected, Actual: actual,
-			})
+		default:
+			if actual != expected {
+				finding.Drifts = append(finding.Drifts, Drift{
+					Parameter: name, Expected: expected, Actual: actual,
+				})
+			}
 		}
 	}
 
@@ -132,6 +146,72 @@ func Evaluate(policy Policy, obs Observation) Finding {
 		finding.Verdict = VerdictCompliant
 	}
 	return finding
+}
+
+// paramSource says where a parameter's value came from, which is what decides
+// between drift and ignorance when the value is missing.
+type paramSource int
+
+const (
+	// sourceUnreadable means no surface that could carry this parameter was
+	// readable, so its value is unknown.
+	sourceUnreadable paramSource = iota
+	// sourceUnset means a surface WAS read and the parameter is genuinely not
+	// set on it. That is an observation, and grounds for drift.
+	sourceUnset
+	// sourceCmdline and sourceModule mean a value was found.
+	sourceCmdline
+	sourceModule
+)
+
+// resolveParam finds the effective value of one expected parameter.
+//
+// The command line is consulted first because it is what was *requested* at
+// boot and it names every kind of parameter. A module parameter — anything
+// spelled "<module>.<name>" — additionally has a running value under
+// /sys/module, and that running value is authoritative when the command line
+// does not mention it: a parameter can be set by modprobe.d instead, which is
+// exactly what the AMD Ryzen AI Developer Platform does for ttm.pages_limit.
+// Checking only the command line would call such a node drifted forever.
+//
+// The asymmetry between the two "missing" cases is the whole point. For a
+// module parameter, missing from the command line is NOT evidence of anything
+// until the module's own value has also been checked, and that value is often
+// unreadable (/sys/module/amdgpu/parameters/* is mode 0400 and the agent is
+// unprivileged). Reporting drift there would accuse a node on the strength of
+// a permission error.
+func resolveParam(obs Observation, name string) (string, paramSource) {
+	if obs.KernelParams != nil {
+		if actual, present := obs.KernelParams[name]; present {
+			return actual, sourceCmdline
+		}
+	}
+
+	if isModuleParam(name) {
+		if obs.ModuleParams != nil {
+			if actual, present := obs.ModuleParams[name]; present {
+				return actual, sourceModule
+			}
+		}
+		// The module's running value is the authority for this parameter and
+		// it could not be read, so its absence from the command line proves
+		// nothing.
+		return "", sourceUnreadable
+	}
+
+	if obs.KernelParams == nil {
+		return "", sourceUnreadable
+	}
+	return "", sourceUnset
+}
+
+// isModuleParam reports whether a parameter name is one the kernel routes to a
+// module, which is the dotted "<module>.<name>" spelling. Only such parameters
+// have a running value under /sys/module/<module>/parameters/<name>; a bare
+// name like "amd_iommu" is core-kernel and lives on the command line alone.
+func isModuleParam(name string) bool {
+	module, param, found := strings.Cut(name, ".")
+	return found && module != "" && param != "" && !strings.Contains(param, ".")
 }
 
 // Summary aggregates findings across the nodes a config targets.

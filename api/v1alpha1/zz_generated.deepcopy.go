@@ -208,6 +208,13 @@ func (in *HaloNodeObservationSpec) DeepCopyInto(out *HaloNodeObservationSpec) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.ModuleParams != nil {
+		in, out := &in.ModuleParams, &out.ModuleParams
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
 	if in.GTTTotalBytes != nil {
 		in, out := &in.GTTTotalBytes, &out.GTTTotalBytes
 		*out = new(int64)
