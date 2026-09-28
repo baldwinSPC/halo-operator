@@ -22,6 +22,9 @@ type fixture struct {
 
 const fixtureCmdline = "BOOT_IMAGE=/vmlinuz root=/dev/nvme0n1p2 amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856 quiet\n"
 
+// fixtureRelease is the physical unit's running kernel, 2026-09-27.
+const fixtureRelease = "6.18.44+rex+5-amd64"
+
 const fixtureLadder = "0: 200Mhz\n1: 1100Mhz\n2: 2900Mhz *\n"
 
 func newFixture(t *testing.T) *fixture {
@@ -33,6 +36,7 @@ func newFixture(t *testing.T) *fixture {
 		sysRoot:  filepath.Join(root, "sys"),
 	}
 	f.writeFile(filepath.Join(f.procRoot, "cmdline"), fixtureCmdline)
+	f.writeFile(filepath.Join(f.procRoot, "sys", "kernel", "osrelease"), fixtureRelease+"\n")
 	f.addDevice("0000:c5:00.0", "0x1002", "0x030000", "amdgpu", map[string]string{
 		"mem_info_gtt_total": "133143986176\n", // 124 GiB
 		"gpu_busy_percent":   "97\n",
@@ -422,5 +426,44 @@ func TestNoModuleDirectoriesYieldsNilNotEmptyMap(t *testing.T) {
 	}
 	if len(r.Messages) == 0 {
 		t.Error("no message explained why the module parameters are absent")
+	}
+}
+
+// TestCollectReadsTheKernelRelease pins the reading every other one is
+// interpreted against: on the physical unit the installed kernels boot to
+// different memory configurations (halo-operator#20).
+func TestCollectReadsTheKernelRelease(t *testing.T) {
+	r := newFixture(t).collector().Collect()
+	if r.KernelRelease == nil || *r.KernelRelease != fixtureRelease {
+		t.Fatalf("KernelRelease = %v, want %q", r.KernelRelease, fixtureRelease)
+	}
+}
+
+// An unreadable or empty release is absent with a reason — never "" — so a
+// consumer comparing against an expected kernel sees "not observed", not a
+// kernel whose name is the empty string.
+func TestCollectKernelReleaseAbsentNotEmpty(t *testing.T) {
+	for name, spoil := range map[string]func(*fixture){
+		"missing": func(f *fixture) {
+			if err := os.Remove(filepath.Join(f.procRoot, "sys", "kernel", "osrelease")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"empty": func(f *fixture) {
+			f.writeFile(filepath.Join(f.procRoot, "sys", "kernel", "osrelease"), "\n")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			spoil(f)
+			r := f.collector().Collect()
+			if r.KernelRelease != nil {
+				t.Errorf("KernelRelease = %q, want absent", *r.KernelRelease)
+			}
+			messagesMention(t, r, "kernel release")
+			if r.GTTTotalBytes == nil {
+				t.Error("an unreadable kernel release poisoned the GTT reading")
+			}
+		})
 	}
 }

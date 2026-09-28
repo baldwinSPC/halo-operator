@@ -35,6 +35,18 @@ type HaloNodeObservationSpec struct {
 	// +optional
 	KernelCmdline *string `json:"kernelCmdline,omitempty"`
 
+	// KernelRelease is the release of the running kernel, from
+	// /proc/sys/kernel/osrelease (what `uname -r` prints).
+	//
+	// Every other reading here is only interpretable against it. On the AMD
+	// Ryzen AI Developer Platform the installed kernels do not boot to the same
+	// memory configuration — one kernel's EFI-partition initramfs carries
+	// /etc/modprobe.d/ttm.conf and another's does not (halo-operator#20) — so a
+	// GTT reading without the kernel it was taken on cannot say whether the
+	// node is configured or merely happened to boot the configured kernel.
+	// +optional
+	KernelRelease *string `json:"kernelRelease,omitempty"`
+
 	// ModuleParams is the running value of each readable kernel module
 	// parameter that governs unified memory, keyed exactly as the kernel
 	// command line would name it — "ttm.pages_limit", "amdgpu.gttsize".
