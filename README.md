@@ -151,9 +151,92 @@ Two things stay unvalidated, and hardware arriving did not settle either:
   amdgpu-driven device the agent publishes no counters rather than silently
   picking one. The available unit is single-GPU, so this is still unsettled.
 
-The claim made here is narrow and deliberate: the agent's *reads* are
-confirmed on a physical gfx1151. No condition has yet reached `True` against a
-node under Kubernetes management, so issues #4/#5 remain open.
+The claim made here is narrow and deliberate. The agent's *reads* are
+confirmed on a physical gfx1151, and so is the *judgement*: run through the
+standalone binary (below), which shares every decision function with the
+controller, both `memory-policy` and `health-checks` reach `Ready` against the
+physical unit for a policy matching what the platform configures. What has not
+happened yet is a condition reaching `True` on a node **under Kubernetes
+management** — which is what issues #4/#5 ask for, so they remain open until
+the node joins a cluster.
+
+## Running without Kubernetes
+
+Most Halo boxes will never be in a cluster. The same judgement is available
+as a single static binary, `halo`, with no API server, no CRDs and no agent:
+
+```sh
+halo inspect                        # what this node reports
+halo check -policy policy.yaml      # judge it against a policy
+halo apply -policy policy.yaml      # plan what would bring it into line
+```
+
+The policy file is the `HaloDeviceConfig` manifest you would `kubectl apply` —
+one format for both modes, parsed strictly, so a misspelled key is an error
+rather than a silently-ignored expectation that then passes by checking
+nothing.
+
+**It is not a second implementation.** `halo` reads the node with the agent's
+collector and judges it through the controller's own translation and decision
+functions; the only thing removed is the round trip through an API server. A
+test feeds the same readings down both paths and fails the build if any
+component state differs, and that test is itself checked by breaking one side
+and confirming it goes red.
+
+Exit codes carry the three-valued answer all the way out, so a script or a
+cron job can never read "could not tell" as "fine":
+
+| code | meaning |
+|---|---|
+| `0` | compliant — every enabled check was observed and matched |
+| `1` | drifted — something was observed to disagree (`apply`: action needed) |
+| `2` | not observed — nothing disagreed, but compliance could not be established |
+| `64` / `70` | usage / internal error — never a verdict about the node |
+
+`2` is deliberately not reused for usage errors, which is what Go's flag
+package would do by default: a bad flag must never read as a verdict.
+
+Run it unprivileged and parameters behind mode-0400 files report as not
+observed; run it as root and they become real verdicts. It never guesses in
+between.
+
+### `apply` plans; it does not write
+
+`halo apply` computes the exact `/etc/modprobe.d` edits that would bring
+module parameters to the policy, shows them as a diff, and **writes nothing** —
+so the boundary above, that this project never mutates a host, still holds.
+Three things it will tell you rather than do:
+
+- **Kernel command line parameters are out of scope.** Changing the command
+  line is Glimmer's signed-task path, decided by the owner for exactly this
+  hardware (#13); a second tool editing loader entries would be two writers on
+  one boot configuration. A module parameter that is *on* the command line is
+  also out of scope, since it overrides modprobe.d at boot and an edit there
+  would be silently ignored.
+- **It edits the platform's own file.** `ttm.pages_limit` is planned as an edit
+  to `/etc/modprobe.d/ttm.conf` — the file the platform's `ttm-config.service`
+  writes — never as a second file whose effect would depend on modprobe's
+  merge order.
+- **modprobe.d alone does nothing here.** `ttm` and `amdgpu` load from the
+  initramfs, and modprobe.d options are baked in when it is built. The
+  platform's own `ttm-config` rebuilds the initramfs for this reason. Worse,
+  writing the file *without* rebuilding does not leave the node unchanged: the
+  stale initramfs keeps the old value until something else rebuilds it — and a
+  kernel upgrade does that automatically — so the change lands silently at an
+  unpredictable later boot.
+
+Executing the plan means rebuilding the initramfs, an operation this project
+treats as destructive. That is pending an explicit decision, and until it is
+made `apply` will say so rather than do it.
+
+### Building it
+
+```sh
+make build-halo                                     # for this machine
+GOOS=linux GOARCH=amd64 make build-halo             # for a Halo, from anywhere
+```
+
+The result is one statically linked binary at `bin/halo`; copy it to the node.
 
 ## Project boundaries
 

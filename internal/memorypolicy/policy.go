@@ -297,3 +297,50 @@ func sortedKeys(m map[string]string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+// Source says where a resolved parameter's value came from.
+type Source string
+
+const (
+	// SourceCmdline means the value was on the kernel command line.
+	SourceCmdline Source = "kernel command line"
+	// SourceModule means the value is the module's running parameter, read
+	// from /sys/module — how a modprobe.d setting shows up.
+	SourceModule Source = "module parameter"
+	// SourceUnset means a surface that could carry the parameter was read
+	// and it is genuinely not set there. An observation, and drift if the
+	// parameter was expected.
+	SourceUnset Source = "not set"
+	// SourceUnreadable means no surface that could carry the parameter was
+	// readable, so its value is unknown.
+	SourceUnreadable Source = "not observed"
+)
+
+// ResolveParam reports the effective value of one parameter and where it came
+// from, by exactly the rules Evaluate uses to judge it.
+//
+// It exists so that anything *displaying* a verdict shows the same value the
+// verdict was reached on. Re-deriving the value for display — command line
+// first, then module parameters — would be a second implementation of the
+// resolution rules, free to drift from the first, and a report whose numbers
+// disagree with its own conclusion is worse than no report.
+func ResolveParam(obs Observation, name string) (string, Source) {
+	value, src := resolveParam(obs, name)
+	switch src {
+	case sourceCmdline:
+		return value, SourceCmdline
+	case sourceModule:
+		return value, SourceModule
+	case sourceUnset:
+		return "", SourceUnset
+	default:
+		return "", SourceUnreadable
+	}
+}
+
+// IsModuleParam reports whether a parameter is a module parameter — spelled
+// "<module>.<name>" — and so has a running value under /sys/module and can be
+// set by modprobe.d, rather than living on the kernel command line alone.
+// Exported so that anything planning a change classifies parameters by the
+// same rule the verdict does.
+func IsModuleParam(name string) bool { return isModuleParam(name) }
