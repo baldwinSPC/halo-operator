@@ -39,7 +39,7 @@ component stanzas:
 
 | Stanza | What it manages |
 |---|---|
-| `memoryPolicy` | Verification only — observes kernel args and effective GTT, reports drift; **never mutates the host** |
+| `memoryPolicy` | Verification only — observes kernel args and effective GTT, reports drift; **never mutates the host** (the standalone binary's `apply -execute` is the one opt-in exception, see below) |
 | `runtimeProfile` | Vulkan/ROCm backend selection surfaced as labels + validated runtime images |
 | `healthChecks` | Probes for the documented APU failure modes (clock-under-load, permission-fault, queue-create) |
 
@@ -200,34 +200,70 @@ Run it unprivileged and parameters behind mode-0400 files report as not
 observed; run it as root and they become real verdicts. It never guesses in
 between.
 
-### `apply` plans; it does not write
+### `apply`: plan by default, execute on request
 
 `halo apply` computes the exact `/etc/modprobe.d` edits that would bring
-module parameters to the policy, shows them as a diff, and **writes nothing** —
-so the boundary above, that this project never mutates a host, still holds.
-Three things it will tell you rather than do:
+module parameters to the policy and shows them as a diff. **By default it
+writes nothing.** `halo apply -execute`, run as root, carries the plan out.
 
-- **Kernel command line parameters are out of scope.** Changing the command
-  line is Glimmer's signed-task path, decided by the owner for exactly this
-  hardware (#13); a second tool editing loader entries would be two writers on
-  one boot configuration. A module parameter that is *on* the command line is
-  also out of scope, since it overrides modprobe.d at boot and an edit there
-  would be silently ignored.
+**This is a deliberate, narrow exception to the boundary that this project
+never mutates a host, and the boundary is otherwise unchanged.** The operator —
+the controller and the DaemonSet agent, everything that runs in a cluster —
+still never writes to a node; host mutation from a fleet remains Glimmer's
+signed-task path. The exception covers one thing only: a person, on the node,
+as root, passing an explicit flag. Even then it writes only `/etc/modprobe.d`,
+never touches the kernel command line, and never reboots.
+
+What planning gets right:
+
+- **Kernel command line parameters are out of scope, always.** Changing the
+  command line is Glimmer's signed-task path, decided by the owner for exactly
+  this hardware (#13); a second tool editing loader entries would be two
+  writers on one boot configuration. A module parameter that is *on* the
+  command line is also out of scope, since it overrides modprobe.d at boot and
+  an edit there would be silently ignored.
 - **It edits the platform's own file.** `ttm.pages_limit` is planned as an edit
   to `/etc/modprobe.d/ttm.conf` — the file the platform's `ttm-config.service`
   writes — never as a second file whose effect would depend on modprobe's
   merge order.
-- **modprobe.d alone does nothing here.** `ttm` and `amdgpu` load from the
-  initramfs, and modprobe.d options are baked in when it is built. The
-  platform's own `ttm-config` rebuilds the initramfs for this reason. Worse,
-  writing the file *without* rebuilding does not leave the node unchanged: the
-  stale initramfs keeps the old value until something else rebuilds it — and a
-  kernel upgrade does that automatically — so the change lands silently at an
-  unpredictable later boot.
 
-Executing the plan means rebuilding the initramfs, an operation this project
-treats as destructive. That is pending an explicit decision, and until it is
-made `apply` will say so rather than do it.
+What `-execute` does, and why it is all-or-nothing:
+
+- **It writes modprobe.d and rebuilds the initramfs together, or neither.**
+  `ttm` and `amdgpu` load from the initramfs, and modprobe.d options are baked
+  in when it is built, so a write alone changes nothing at the next boot. Worse,
+  a write without a rebuild does not leave the node unchanged: the stale
+  initramfs keeps the old value until something else rebuilds it — a kernel
+  upgrade does so automatically — and the change lands silently at an
+  unpredictable later boot. So there is no write-only mode.
+- **"Together" is verified, not assumed.** The boot loader here reads the
+  initramfs from the EFI system partition, not `/boot`; a post-update hook
+  copies it there, and that hook exits 0 *without copying* if `bootctl` is
+  missing. So after `update-initramfs -u -k all`, every image a boot could
+  load — the `/boot` copy and the ESP copy, for every installed kernel — is
+  unpacked and checked to carry the new options. Images are found from the
+  kernels in `/lib/modules`, matched exactly: the physical unit carries a
+  stale `initrd.img-*.dpkg-bak` that a glob would pick up and fail on.
+- **Any failure rolls back, and resyncs.** If the rebuild fails or any image
+  does not carry the change, every file is restored exactly (a file the run
+  created is removed), and the initramfs is rebuilt again from the restored
+  files — so a failed apply leaves the boot image agreeing with the config,
+  not carrying a change nobody kept. Writes are atomic renames, so a crash
+  leaves the old file or the new one, never a truncated one.
+- **It re-checks before writing.** If a file changed between planning and
+  executing, the diff that was shown is no longer the diff that would be
+  written, and it refuses.
+- **It never reboots.** Nothing takes effect on the running system — GTT is
+  sized when amdgpu initialises. Reboot, then `halo check` verifies the running
+  values rather than trusting that the write took.
+
+One side effect belongs to the platform rather than this tool, and is worth
+knowing: the post-update hook runs `kernel-install add` for each kernel, which
+also regenerates the loader entries from `/etc/kernel/cmdline`.
+
+`-execute` exits `0` when the change was written, rebuilt and verified (reboot
+pending), `70` when it failed and was rolled back, and `77` when not run as
+root.
 
 ### Building it
 

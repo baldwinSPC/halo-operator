@@ -43,14 +43,23 @@ usage:
   halo inspect [-json]                 what this node reports (read-only)
   halo check   -policy FILE [-json]    judge this node against a policy (read-only)
   halo apply   -policy FILE [-json]    plan what would bring it into line (writes nothing)
+  halo apply   -policy FILE -execute   carry the plan out, as root (see below)
 
 FILE is a HaloDeviceConfig manifest — the same file you would kubectl apply.
 
+apply -execute writes the planned /etc/modprobe.d edits AND rebuilds the
+initramfs — together or not at all, since on this platform a modprobe.d
+change without a rebuild does nothing now and lands silently later. Every boot
+image is then checked to carry the change; if any does not, the write is
+rolled back. It never reboots and never touches the kernel command line.
+
 exit codes:
   0  compliant       every enabled check was observed and matched
+                     (apply -execute: written, rebuilt and verified; reboot to apply)
   1  drifted         something was observed to disagree (apply: action needed)
   2  not observed    nothing disagreed, but compliance could not be established
-  64 usage error     70 internal error
+  64 usage error     70 internal error (apply -execute: failed, rolled back)
+  77 needs root
 `
 
 func main() {
@@ -169,9 +178,12 @@ func check(args []string, stdout, stderr io.Writer) int {
 func apply(args []string, stdout, stderr io.Writer) int {
 	var c common
 	var policy, root string
+	var execute bool
 	fs := newFlags("apply", stderr, &c)
 	fs.StringVar(&policy, "policy", "", "HaloDeviceConfig manifest to plan against (required)")
 	fs.StringVar(&root, "root", "/", "filesystem root to read modprobe.d from")
+	fs.BoolVar(&execute, "execute", false,
+		"carry the plan out: write modprobe.d AND rebuild the initramfs, verified, rolled back on failure (root)")
 	if code, ok := parse(fs, args); !ok {
 		return code
 	}
@@ -179,19 +191,42 @@ func apply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "apply: -policy is required")
 		return standalone.ExitUsage
 	}
+	// Checked before anything is read or planned, so a non-root run fails
+	// fast and plainly rather than partway through with a permission error.
+	if execute && os.Geteuid() != 0 {
+		fmt.Fprintln(stderr, "apply: -execute writes /etc/modprobe.d and rebuilds the initramfs, so it must run as root")
+		return standalone.ExitNoPerm
+	}
 	cfg, err := standalone.LoadPolicy(policy)
 	if err != nil {
 		fmt.Fprintf(stderr, "apply: %v\n", err)
 		return standalone.ExitUsage
 	}
 	plan := standalone.PlanApply(c.node, read(c), *cfg, root)
+
+	if !execute {
+		if c.json {
+			if err := standalone.WriteJSON(stdout, plan); err != nil {
+				fmt.Fprintf(stderr, "halo: %v\n", err)
+				return standalone.ExitSoftware
+			}
+		} else {
+			standalone.RenderPlan(stdout, plan, policy)
+		}
+		return plan.ExitCode
+	}
+
+	result := standalone.Execute(plan, root, standalone.DebianSystem{Root: root})
 	if c.json {
-		if err := standalone.WriteJSON(stdout, plan); err != nil {
+		if err := standalone.WriteJSON(stdout, struct {
+			Plan   standalone.Plan       `json:"plan"`
+			Result standalone.ExecResult `json:"result"`
+		}{plan, result}); err != nil {
 			fmt.Fprintf(stderr, "halo: %v\n", err)
 			return standalone.ExitSoftware
 		}
 	} else {
-		standalone.RenderPlan(stdout, plan, policy)
+		standalone.RenderExec(stdout, plan, result, policy)
 	}
-	return plan.ExitCode
+	return result.ExitCode
 }

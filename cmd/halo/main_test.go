@@ -92,3 +92,21 @@ spec:
 		t.Errorf("the report does not say ttm.pages_limit came from the module parameter:\n%s", out)
 	}
 }
+
+// -execute writes /etc/modprobe.d and rebuilds the initramfs, so without root
+// it must refuse up front with its own exit code, before reading or planning
+// anything. Skipped when the test itself runs as root — which CI does, since
+// the job container runs as uid 0 — because there the refusal cannot occur and
+// the test would instead start a real execute inside the CI container.
+func TestExecuteRequiresRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root, where the refusal under test cannot happen")
+	}
+	policy := filepath.Join(t.TempDir(), "p.yaml")
+	if err := os.WriteFile(policy, []byte("kind: HaloDeviceConfig\nspec: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, errOut := runHalo("apply", "-policy", policy, "-execute"); got != standalone.ExitNoPerm {
+		t.Errorf("exit %d, want %d; stderr: %s", got, standalone.ExitNoPerm, errOut)
+	}
+}
