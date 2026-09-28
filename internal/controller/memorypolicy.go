@@ -10,6 +10,7 @@ import (
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/observe"
 )
 
 // NodeObserver supplies memory observations for the nodes a config targets.
@@ -21,15 +22,6 @@ import (
 // guessing.
 type NodeObserver interface {
 	Observe(ctx context.Context, selector map[string]string) ([]memorypolicy.Observation, error)
-}
-
-// policyFromSpec lifts the CRD stanza into the decision package's own type, so
-// that package never imports the API.
-func policyFromSpec(spec halov1alpha1.MemoryPolicySpec) memorypolicy.Policy {
-	return memorypolicy.Policy{
-		ExpectedKernelArgs:       spec.ExpectedKernelArgs,
-		MinEffectiveGPUMemoryGiB: spec.MinEffectiveGPUMemoryGiB,
-	}
 }
 
 // evaluateMemoryPolicy observes the targeted nodes and reduces what was found
@@ -81,7 +73,7 @@ func evaluateMemoryPolicy(
 		return status, condition
 	}
 
-	policy := policyFromSpec(spec.MemoryPolicy)
+	policy := observe.MemoryPolicy(spec.MemoryPolicy)
 	findings := make([]memorypolicy.Finding, 0, len(observations))
 	for _, obs := range observations {
 		findings = append(findings, memorypolicy.Evaluate(policy, obs))

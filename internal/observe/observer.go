@@ -64,27 +64,42 @@ func (o *Observer) Observe(ctx context.Context, selector map[string]string) ([]m
 	}
 	out := make([]memorypolicy.Observation, 0, len(nodes))
 	for _, node := range nodes {
-		obs := memorypolicy.Observation{Node: node}
-		if spec, ok := readings[node]; ok {
-			if spec.KernelCmdline != nil {
-				// Parsing happens here, not on the node, so the parse rules
-				// live in one versioned place and a raw cmdline is always
-				// inspectable on the published observation. Note an empty
-				// command line parses to an empty map: that is "read fine,
-				// nothing set", which is drift if parameters were expected —
-				// nil, "could not read", stays reserved for the nil field.
-				obs.KernelParams = memorypolicy.ParseKernelCmdline(*spec.KernelCmdline)
-			}
-			// Passed through as read. Unlike the command line there is nothing
-			// to parse — each entry is already one parameter and one value —
-			// and nil stays nil so "no module directory was readable" does not
-			// arrive as "read fine, nothing set".
-			obs.ModuleParams = spec.ModuleParams
-			obs.EffectiveGPUMemoryGiB = gibFloor(spec.GTTTotalBytes)
-		}
-		out = append(out, obs)
+		// A node with no fresh observation gets a nil spec, and so an
+		// observation with every reading nil — it stays in the calculus.
+		out = append(out, MemoryObservation(node, readings[node]))
 	}
 	return out, nil
+}
+
+// MemoryObservation translates one node's published spec into what the memory
+// policy judges. A nil spec — no fresh observation — yields an observation
+// with every reading nil, which the policy treats as unobserved, never as
+// compliant.
+//
+// Exported because it is shared with the standalone `halo` binary, which has
+// no cluster and so no Observer, but must judge a node exactly as the
+// controller would. One translation, two callers.
+func MemoryObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) memorypolicy.Observation {
+	obs := memorypolicy.Observation{Node: node}
+	if spec == nil {
+		return obs
+	}
+	if spec.KernelCmdline != nil {
+		// Parsing happens here, not on the node, so the parse rules live in
+		// one versioned place and a raw cmdline is always inspectable on the
+		// published observation. Note an empty command line parses to an
+		// empty map: that is "read fine, nothing set", which is drift if
+		// parameters were expected — nil, "could not read", stays reserved
+		// for the nil field.
+		obs.KernelParams = memorypolicy.ParseKernelCmdline(*spec.KernelCmdline)
+	}
+	// Passed through as read. Unlike the command line there is nothing to
+	// parse — each entry is already one parameter and one value — and nil
+	// stays nil so "no module directory was readable" does not arrive as
+	// "read fine, nothing set".
+	obs.ModuleParams = spec.ModuleParams
+	obs.EffectiveGPUMemoryGiB = gibFloor(spec.GTTTotalBytes)
+	return obs
 }
 
 // ObserveHealth returns one health observation per targeted node.
@@ -95,17 +110,36 @@ func (o *Observer) ObserveHealth(ctx context.Context, selector map[string]string
 	}
 	out := make([]healthchecks.Observation, 0, len(nodes))
 	for _, node := range nodes {
-		obs := healthchecks.Observation{Node: node}
-		if spec, ok := readings[node]; ok {
-			obs.GPUBusyPercent = copyInt32(spec.GPUBusyPercent)
-			obs.SCLKMHz = copyInt32(spec.SCLKMHz)
-			obs.RatedSCLKMHz = copyInt32(spec.RatedSCLKMHz)
-			obs.PermissionFaults = copyInt32(spec.PermissionFaults)
-			obs.QueueCreateFailures = copyInt32(spec.QueueCreateFailures)
-		}
-		out = append(out, obs)
+		out = append(out, HealthObservation(node, readings[node]))
 	}
 	return out, nil
+}
+
+// HealthObservation translates one node's published spec into what the health
+// probes judge. A nil spec yields every reading nil, which each probe reports
+// as not observed — never as a clean bill of health. Shared with the
+// standalone binary for the same reason as MemoryObservation.
+func HealthObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) healthchecks.Observation {
+	obs := healthchecks.Observation{Node: node}
+	if spec == nil {
+		return obs
+	}
+	obs.GPUBusyPercent = copyInt32(spec.GPUBusyPercent)
+	obs.SCLKMHz = copyInt32(spec.SCLKMHz)
+	obs.RatedSCLKMHz = copyInt32(spec.RatedSCLKMHz)
+	obs.PermissionFaults = copyInt32(spec.PermissionFaults)
+	obs.QueueCreateFailures = copyInt32(spec.QueueCreateFailures)
+	return obs
+}
+
+// MemoryPolicy lifts the CRD stanza into the decision package's own type, so
+// that package never imports the API. Shared by the controller and the
+// standalone binary so a policy file means the same thing to both.
+func MemoryPolicy(spec halov1alpha1.MemoryPolicySpec) memorypolicy.Policy {
+	return memorypolicy.Policy{
+		ExpectedKernelArgs:       spec.ExpectedKernelArgs,
+		MinEffectiveGPUMemoryGiB: spec.MinEffectiveGPUMemoryGiB,
+	}
 }
 
 // join lists the targeted nodes and the fresh observation, if any, for each.
