@@ -9,18 +9,87 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # A self-hosted ARC scale set on the Spark cluster. It runs in Kubernetes
+    # container-hook mode with ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=true, so
+    # naming a container is mandatory, not stylistic — a job without one is
+    # rejected by the runner.
+    runs-on: glimmer-arm64-halo-operator
+    # Built by .github/workflows/runner-image.yml. It carries Go, helm, make
+    # and gcc, none of which the stock actions-runner image has.
+    #
+    # Pinned to the commit that built it, and scripts/ci-runner-pin-check.sh
+    # keeps it that way. A moving tag makes a green unnameable: ":latest"
+    # passing today says nothing about what runs tomorrow, and when it breaks
+    # there is no way to state which image was tested. A commit SHA is
+    # preferred over a bare digest because it is the one immutable form that
+    # can also be *named* — `git show a4ea6ba` explains what is in this image.
+    #
+    # To move it: merge a change under images/runner/, then take the tag the
+    # build workflow prints as a ::notice:: and update this line.
+    container: ghcr.io/baldwinspc/halo-operator-runner:a4ea6ba1a7c43b30815158d64bfa1f1cc663dd77
+    env:
+      # The job container runs as root while the checkout is owned by uid 1001,
+      # so git refuses every operation in it with "detected dubious ownership"
+      # and exit 128. That surfaces in the least obvious place available:
+      # `go build` shells out to git to stamp VCS info, so the failure reads
+      # "error obtaining VCS status: exit status 128" and names neither git nor
+      # ownership.
+      #
+      # actions/checkout DOES set a safe.directory exception. It is simply not
+      # in scope for any later step, and its own log says why — verbatim from
+      # the checkout step of this workflow:
+      #
+      #   Temporarily overriding HOME='/__w/_temp/<uuid>' before making global
+      #     git config changes
+      #   Adding repository directory to the temporary git global config as a
+      #     safe directory
+      #   [command]/usr/bin/git config --global --add safe.directory
+      #     /__w/halo-operator/halo-operator
+      #
+      # The exception goes into a global config under a THROWAWAY HOME that
+      # checkout overrides for its own git commands and then discards. Measured
+      # in a later step: HOME=[/root], stable, and /root/.gitconfig does not
+      # exist — so the exception was never written anywhere the build can see.
+      # Note the step's HOME does not move; it is checkout's HOME that is
+      # temporary, which is a different claim and the one the evidence supports.
+      #
+      # Passing the exception through the environment is what makes it reach
+      # every step, because the environment is inherited and depends on no HOME
+      # at all.
+      #
+      # Scoped to the workspace rather than "*": "*" switches git's ownership
+      # check off wholesale, which is a different thing from making one
+      # exception for the directory we put there ourselves.
+      #
+      # github.workspace evaluates to the RUNNER's path
+      # (/home/runner/_work/...), not this container's. It still works because
+      # the runner path-translates env values into container jobs — measured,
+      # git reports the exception as /__w/halo-operator/halo-operator. Prefer it
+      # over hardcoding /__w/... , which is an undocumented internal path.
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: safe.directory
+      GIT_CONFIG_VALUE_0: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
+      # No actions/setup-go: the runner image carries the toolchain, and
+      # GOTOOLCHAIN=auto fetches an exact match when go.mod requires a newer
+      # patch release than the baked one.
+      - name: The toolchain is present
+        # The chart render tests skip when helm is missing, and a silent skip
+        # is indistinguishable from a pass — so assert the tools before using
+        # them rather than discovering a gap as a green build that tested
+        # nothing. The runner image asserts the same set at build time; this is
+        # the check that the job is actually running in that image.
+        run: |
+          go version
+          helm version --short
+          make --version | head -1
+
       - name: Forbid glimmer imports
         run: make verify-no-glimmer-imports
-      - name: Helm is present
-        # The chart render tests skip when helm is missing. A silent skip is
-        # indistinguishable from a pass, so fail loudly instead.
-        run: helm version
+
+      - name: Job containers are immutably pinned
+        run: make verify-runner-pin
 
       - name: Lint the Helm chart
         run: make helm-lint
