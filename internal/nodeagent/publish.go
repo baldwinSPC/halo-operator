@@ -67,17 +67,30 @@ func buildObservation(nodeName string, nodeUID types.UID, r Reading, at metav1.T
 				UID:        nodeUID,
 			}},
 		},
-		Spec: halov1alpha1.HaloNodeObservationSpec{
-			ObservedAt:          at,
-			KernelCmdline:       r.KernelCmdline,
-			ModuleParams:        r.ModuleParams,
-			GTTTotalBytes:       r.GTTTotalBytes,
-			GPUBusyPercent:      r.GPUBusyPercent,
-			SCLKMHz:             r.SCLKMHz,
-			RatedSCLKMHz:        r.RatedSCLKMHz,
-			Messages:            r.Messages,
-			PermissionFaults:    nil, // no validated kernel-log reader yet; see the spec comments
-			QueueCreateFailures: nil,
-		},
+		Spec: SpecFromReading(r, at),
+	}
+}
+
+// SpecFromReading lifts a Reading into the observation spec, one field per
+// reading, nil for nil. It adds nothing and infers nothing.
+//
+// It is exported because it is the seam between the two ways this operator
+// runs. The DaemonSet wraps it in identity and ownership and publishes it;
+// the standalone `halo` binary evaluates it in-process with no cluster at
+// all. Both go through this one function, so a node judged by either is
+// judged on an identical spec — which is what makes the two modes the same
+// product rather than two products that agree today.
+func SpecFromReading(r Reading, at metav1.Time) halov1alpha1.HaloNodeObservationSpec {
+	return halov1alpha1.HaloNodeObservationSpec{
+		ObservedAt:          at,
+		KernelCmdline:       r.KernelCmdline,
+		ModuleParams:        r.ModuleParams,
+		GTTTotalBytes:       r.GTTTotalBytes,
+		GPUBusyPercent:      r.GPUBusyPercent,
+		SCLKMHz:             r.SCLKMHz,
+		RatedSCLKMHz:        r.RatedSCLKMHz,
+		Messages:            r.Messages,
+		PermissionFaults:    nil, // no validated kernel-log reader yet; see the spec comments
+		QueueCreateFailures: nil,
 	}
 }

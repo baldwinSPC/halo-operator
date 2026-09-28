@@ -1,0 +1,200 @@
+// Copyright 2026 the AMD Halo Operator authors
+// SPDX-License-Identifier: Apache-2.0
+
+package standalone
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
+)
+
+func ptr[T any](v T) *T { return &v }
+
+// amdHaloSpec is the reading taken off the physical AMD Ryzen AI Developer
+// Platform (amd-halo, kernel 6.18.44+rex+5-amd64) on 2026-09-27, unprivileged.
+// ttm is sized by /etc/modprobe.d/ttm.conf, so ttm.pages_limit appears as a
+// module parameter and nowhere on the command line; amdgpu's parameters are
+// mode 0400 and so are absent.
+func amdHaloSpec() halov1alpha1.HaloNodeObservationSpec {
+	return halov1alpha1.HaloNodeObservationSpec{
+		KernelCmdline:  ptr(`initrd=\amd-ryzen-ai-developer-platform\6.18.44+rex+5-amd64\initrd.img-6.18.44+rex+5-amd64 root=UUID=643b044c-c24b-418b-8ba5-72632dcb1892 splash quiet loglevel=3`),
+		ModuleParams:   map[string]string{"ttm.pages_limit": "24692260", "ttm.page_pool_size": "16395959"},
+		GTTTotalBytes:  ptr(int64(101139496960)),
+		GPUBusyPercent: ptr(int32(0)),
+		SCLKMHz:        ptr(int32(600)),
+		RatedSCLKMHz:   ptr(int32(2900)),
+	}
+}
+
+func config(spec halov1alpha1.HaloDeviceConfigSpec) halov1alpha1.HaloDeviceConfig {
+	return halov1alpha1.HaloDeviceConfig{Spec: spec}
+}
+
+// platformPolicy is what the platform itself configures. On the real node it
+// is the first policy ever to evaluate compliant — the point of this test is
+// that it stays that way.
+func platformPolicy() halov1alpha1.HaloDeviceConfigSpec {
+	return halov1alpha1.HaloDeviceConfigSpec{
+		MemoryPolicy: halov1alpha1.MemoryPolicySpec{
+			ExpectedKernelArgs:       map[string]string{"ttm.pages_limit": "24692260"},
+			MinEffectiveGPUMemoryGiB: 90,
+		},
+		HealthChecks: halov1alpha1.HealthChecksSpec{Probes: []string{"clock-under-load"}},
+	}
+}
+
+func TestTheRealNodeIsCompliantWithWhatThePlatformConfigures(t *testing.T) {
+	r := Evaluate("amd-halo", amdHaloSpec(), config(platformPolicy()))
+	if r.Outcome != OutcomeCompliant || r.ExitCode != ExitCompliant {
+		t.Fatalf("outcome = %s (exit %d), want compliant (exit 0); components %+v", r.Outcome, r.ExitCode, r.Components)
+	}
+	// And the value is attributed to the module parameter — the modprobe.d
+	// finding — not to a command line it is not on.
+	for _, p := range r.Components[0].Params {
+		if p.Name == "ttm.pages_limit" && p.Source != "module parameter" {
+			t.Errorf("ttm.pages_limit source = %q, want module parameter", p.Source)
+		}
+	}
+}
+
+func TestExitCodesCarryTheThreeValuedAnswer(t *testing.T) {
+	cases := []struct {
+		name   string
+		spec   halov1alpha1.HaloNodeObservationSpec
+		policy halov1alpha1.HaloDeviceConfigSpec
+		want   Outcome
+		exit   int
+	}{
+		{"matched", amdHaloSpec(), platformPolicy(), OutcomeCompliant, ExitCompliant},
+		{
+			"observed disagreement is drift",
+			amdHaloSpec(),
+			halov1alpha1.HaloDeviceConfigSpec{MemoryPolicy: halov1alpha1.MemoryPolicySpec{
+				ExpectedKernelArgs: map[string]string{"amd_iommu": "off"}}},
+			OutcomeDrifted, ExitDrifted,
+		},
+		{
+			// amdgpu's parameters are 0400: unreadable is not observed, never drift.
+			"an unreadable module parameter is not observed",
+			amdHaloSpec(),
+			halov1alpha1.HaloDeviceConfigSpec{
+				MemoryPolicy: halov1alpha1.MemoryPolicySpec{
+					ExpectedKernelArgs: map[string]string{"amdgpu.gttsize": "126976"}},
+				HealthChecks: halov1alpha1.HealthChecksSpec{Probes: []string{"clock-under-load"}},
+			},
+			OutcomeNotObserved, ExitNotObserved,
+		},
+		{
+			"a node that could not be read at all is not observed",
+			halov1alpha1.HaloNodeObservationSpec{},
+			platformPolicy(),
+			OutcomeNotObserved, ExitNotObserved,
+		},
+		{
+			// The default probe set includes the kernel-log probes, which have
+			// no reader, so health is undecidable — and that is reported, not
+			// hidden behind a 0.
+			"default probes are not observed rather than healthy",
+			amdHaloSpec(),
+			halov1alpha1.HaloDeviceConfigSpec{MemoryPolicy: platformPolicy().MemoryPolicy},
+			OutcomeNotObserved, ExitNotObserved,
+		},
+		{
+			"drift outranks missing information",
+			halov1alpha1.HaloNodeObservationSpec{KernelCmdline: ptr("quiet")},
+			halov1alpha1.HaloDeviceConfigSpec{MemoryPolicy: halov1alpha1.MemoryPolicySpec{
+				ExpectedKernelArgs:       map[string]string{"amd_iommu": "off"},
+				MinEffectiveGPUMemoryGiB: 90}},
+			OutcomeDrifted, ExitDrifted,
+		},
+		{
+			"nothing enabled establishes nothing",
+			amdHaloSpec(),
+			halov1alpha1.HaloDeviceConfigSpec{
+				MemoryPolicy: halov1alpha1.MemoryPolicySpec{Enabled: ptr(false)},
+				HealthChecks: halov1alpha1.HealthChecksSpec{Enabled: ptr(false)},
+			},
+			OutcomeNotObserved, ExitNotObserved,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := Evaluate("n", tc.spec, config(tc.policy))
+			if r.Outcome != tc.want || r.ExitCode != tc.exit {
+				t.Errorf("outcome = %s (exit %d), want %s (exit %d); components %+v",
+					r.Outcome, r.ExitCode, tc.want, tc.exit, r.Components)
+			}
+		})
+	}
+}
+
+// The tool's own failures must never be readable as a verdict about the node.
+func TestToolErrorsAreDisjointFromVerdicts(t *testing.T) {
+	verdicts := map[int]bool{ExitCompliant: true, ExitDrifted: true, ExitNotObserved: true}
+	for _, code := range []int{ExitUsage, ExitSoftware} {
+		if verdicts[code] {
+			t.Errorf("tool error code %d collides with a verdict", code)
+		}
+	}
+}
+
+// The lines explain the verdict; they must never contradict it.
+func TestParamLinesAgreeWithTheVerdict(t *testing.T) {
+	r := Evaluate("n", amdHaloSpec(), config(halov1alpha1.HaloDeviceConfigSpec{
+		MemoryPolicy: halov1alpha1.MemoryPolicySpec{ExpectedKernelArgs: map[string]string{
+			"amd_iommu": "off", "amdgpu.gttsize": "126976", "ttm.pages_limit": "32505856"}},
+	}))
+	mem := r.Components[0]
+	if mem.State != halov1alpha1.ComponentDegraded {
+		t.Fatalf("state = %s, want Degraded", mem.State)
+	}
+	want := map[string]string{"amd_iommu": LineDrift, "amdgpu.gttsize": LineUnobserved, "ttm.pages_limit": LineDrift}
+	for _, p := range mem.Params {
+		if want[p.Name] != p.Result {
+			t.Errorf("%s = %s, want %s", p.Name, p.Result, want[p.Name])
+		}
+	}
+}
+
+func TestNodeSelectorIsWarnedAboutNotSilentlyApplied(t *testing.T) {
+	spec := platformPolicy()
+	spec.NodeSelector = map[string]string{"kubernetes.io/hostname": "somewhere-else"}
+	r := Evaluate("amd-halo", amdHaloSpec(), config(spec))
+	if len(r.Warnings) == 0 {
+		t.Error("a nodeSelector was accepted without a warning that standalone mode ignores it")
+	}
+}
+
+func TestLoadPolicy(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	if _, err := LoadPolicy("../../config/samples/amdhalo_v1alpha1_halodeviceconfig.yaml"); err != nil {
+		t.Errorf("the repository's own sample does not load: %v", err)
+	}
+
+	// A misspelled key must be an error. Silently ignoring it would check
+	// nothing and pass — the worst available failure for this tool.
+	typo := write("typo.yaml", "kind: HaloDeviceConfig\nspec:\n  memoryPolicy:\n    expectedKernelArg:\n      ttm.pages_limit: \"1\"\n")
+	if _, err := LoadPolicy(typo); err == nil {
+		t.Error("a misspelled policy key was accepted")
+	}
+
+	wrongKind := write("wrong.yaml", "kind: ConfigMap\nspec: {}\n")
+	if _, err := LoadPolicy(wrongKind); err == nil {
+		t.Error("a manifest of the wrong kind was accepted")
+	}
+
+	if _, err := LoadPolicy(filepath.Join(dir, "missing.yaml")); err == nil {
+		t.Error("a missing policy file was accepted")
+	}
+}

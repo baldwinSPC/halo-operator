@@ -88,3 +88,13 @@ runner-image: ## Build the CI runner image locally for linux/arm64.
 .PHONY: verify-runner-pin
 verify-runner-pin: ## Assert every workflow job container is pinned to an immutable reference.
 	./scripts/ci-runner-pin-check.sh
+
+##@ Standalone
+
+# halo: the operator's judgement for a single node, no Kubernetes. Statically
+# linked (CGO off) so the one file runs on any Linux Halo, including one with
+# a different libc from the build machine. GOOS/GOARCH pass through, so
+# `GOOS=linux GOARCH=amd64 make build-halo` cross-builds for a Halo.
+.PHONY: build-halo
+build-halo: ## Build the standalone halo binary into bin/halo.
+	CGO_ENABLED=0 go build -trimpath -o bin/halo ./cmd/halo
