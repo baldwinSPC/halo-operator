@@ -130,10 +130,16 @@ jobs:
         run: |
           # The chart sets runAsNonRoot without runAsUser, so the kubelet only
           # starts the pod if the IMAGE declares a numeric non-zero user.
+          #
+          # Each platform's config is read from the REGISTRY, not pulled. Two
+          # platforms of one multi-arch digest cannot both be pulled under that
+          # digest — Docker refuses the second with "cannot overwrite digest" —
+          # which is how v0.1.0's release stopped here after its image was
+          # already pushed. A platform absent from the index is a template
+          # error, which aborts this step: it fails closed, never reads as empty.
           ref="${IMAGE}@${{ steps.push.outputs.digest }}"
           for p in linux/amd64 linux/arm64; do
-            docker pull -q --platform "$p" "$ref" >/dev/null
-            user=$(docker inspect --format '{{.Config.User}}' "$ref")
+            user=$(docker buildx imagetools inspect "$ref" --format "{{ (index .Image \"$p\").Config.User }}")
             echo "$p user: [$user]"
             case "$user" in
               ''|0|0:*|root|root:*) echo "::error::$p runs as root ([$user])"; exit 1 ;;
