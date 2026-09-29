@@ -288,6 +288,23 @@ The result is one statically linked binary at `bin/halo`; copy it to the node.
 
 Requires Kubernetes 1.29 or newer.
 
+**From a release** (recommended). Each release on GitHub carries the chart
+already pinned to its image **by digest**, so the version it names is the
+bytes it runs, plus the standalone `halo` binaries and `SHA256SUMS`:
+
+```sh
+helm install halo-operator halo-operator-<version>.tgz --namespace halo-system --create-namespace
+```
+
+The image, `ghcr.io/baldwinspc/halo-operator`, is built for linux/amd64 and
+linux/arm64, so the same chart installs on a Halo (x86-64) and on an arm64
+control plane such as a DGX Spark. It is `FROM scratch`: the two static
+binaries and nothing else, running as a numeric non-root user. This repository
+is private, so its package is too — a cluster needs an image pull secret with
+`read:packages`, set through `imagePullSecrets`.
+
+**From source**, for development:
+
 ```sh
 helm install halo-operator deploy/helm/halo-operator --namespace halo-system --create-namespace
 ```
@@ -298,13 +315,15 @@ first install only and never upgrades or removes them, so a CRD change needs
 when something else owns the CRD.
 
 Values worth knowing: `image.tag` defaults to the chart appVersion,
+`image.digest` pins the pull (a released chart sets it; a malformed one fails
+the render rather than the pull),
 `leaderElection.enabled` must stay on if `replicaCount` is above 1, and
 `rbac.create` / `serviceAccount.create` let you bring your own. The node
 agent is on by default (`agent.enabled`), runs on nodes matching
 `agent.nodeSelector` (the NFD AMD GPU label), and publishes every
 `agent.interval` (1m); disabling it does not fake anything — conditions fall
-back to `Unknown`. The image is expected to carry both `/manager` and
-`/agent` binaries.
+back to `Unknown`. The image carries both `/manager` and `/agent`; `make
+image` builds it locally.
 
 ## Developing
 

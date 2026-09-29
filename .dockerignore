@@ -1,0 +1,9 @@
+# Only api/, cmd/, internal/ and go.mod/go.sum are copied into the build.
+# Everything else is excluded so the build context stays small and a stray
+# secret in the working tree can never reach a layer.
+*
+!go.mod
+!go.sum
+!api/
+!cmd/
+!internal/

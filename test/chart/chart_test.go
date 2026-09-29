@@ -398,3 +398,48 @@ func TestManagerRoleReadsObservations(t *testing.T) {
 		}
 	}
 }
+
+const testDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000abc"
+
+// A released chart pulls by digest, so the version it names is the bytes it
+// runs. Two-sided: with a digest BOTH workloads reference it, and without one
+// neither carries an "@" — so a digest silently dropped by the helper, or one
+// leaking into an unpinned install, both fail.
+func TestImageIsPinnedByDigestWhenOneIsGiven(t *testing.T) {
+	pinned := render(t, "--set", "image.digest="+testDigest)
+	for _, kind := range []string{"Deployment", "DaemonSet"} {
+		doc := documentOfKind(t, pinned, kind)
+		want := "ghcr.io/baldwinspc/halo-operator:0.1.0@" + testDigest
+		if !strings.Contains(doc, want) {
+			t.Errorf("the %s does not pull by digest; want image %q:\n%s", kind, want, doc)
+		}
+	}
+
+	unpinned := render(t)
+	for _, kind := range []string{"Deployment", "DaemonSet"} {
+		doc := documentOfKind(t, unpinned, kind)
+		if strings.Contains(doc, "@sha256:") {
+			t.Errorf("the %s carries a digest with none configured:\n%s", kind, doc)
+		}
+		if !strings.Contains(doc, "ghcr.io/baldwinspc/halo-operator:0.1.0") {
+			t.Errorf("the %s does not reference repository:appVersion:\n%s", kind, doc)
+		}
+	}
+}
+
+// A malformed digest must fail the render, not ship. "@garbage" in a pod spec
+// fails only at pull time, on the cluster, far from the release that produced it.
+func TestMalformedDigestFailsTheRender(t *testing.T) {
+	helm, err := exec.LookPath("helm")
+	if err != nil {
+		t.Skip("helm is not installed, skipping chart render test")
+	}
+	out, err := exec.Command(helm, "template", "halo", filepath.Join(repoRoot(t), chartPath),
+		"--set", "image.digest=latest").CombinedOutput()
+	if err == nil {
+		t.Fatalf("a non-sha256 digest rendered without error:\n%s", out)
+	}
+	if !strings.Contains(string(out), "sha256") {
+		t.Errorf("the failure does not say what a digest must look like: %s", out)
+	}
+}
