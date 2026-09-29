@@ -198,3 +198,13 @@ func TestLoadPolicy(t *testing.T) {
 		t.Error("a missing policy file was accepted")
 	}
 }
+
+// ExitNoPerm joins the tool-error codes, and must be as disjoint from the
+// verdicts as they are.
+func TestExitNoPermIsNotAVerdict(t *testing.T) {
+	for _, v := range []int{ExitCompliant, ExitDrifted, ExitNotObserved, ExitUsage, ExitSoftware} {
+		if ExitNoPerm == v {
+			t.Errorf("ExitNoPerm (%d) collides with %d", ExitNoPerm, v)
+		}
+	}
+}

@@ -304,3 +304,39 @@ func splitLines(s string) []string {
 	}
 	return strings.Split(s, "\n")
 }
+
+// RenderExec writes what execution did. Success leads with the reboot, since
+// nothing has taken effect yet; failure leads with what was undone.
+func RenderExec(w io.Writer, p Plan, r ExecResult, policyPath string) {
+	fmt.Fprintf(w, "halo apply -execute   node=%s   policy=%s\n\n", p.Node, policyPath)
+	if len(p.Edits) == 0 && r.Error == "" {
+		fmt.Fprintln(w, "nothing to do: every planned parameter already has its declared value. Nothing was written.")
+		return
+	}
+	for _, path := range r.Written {
+		fmt.Fprintf(w, "wrote     %s\n", path)
+	}
+	for _, image := range r.Verified {
+		fmt.Fprintf(w, "verified  %s carries the change\n", image)
+	}
+	if r.Error != "" {
+		fmt.Fprintf(w, "\nFAILED: %s\n", r.Error)
+		switch {
+		case r.RolledBack && r.Resynced:
+			fmt.Fprintln(w, "rolled back: every file restored, and the initramfs rebuilt from the restored files,")
+			fmt.Fprintln(w, "so the boot image and the config agree. The node is as it was before this run.")
+		case r.RolledBack:
+			fmt.Fprintln(w, "rolled back: every file restored to its state before this run.")
+		}
+		fmt.Fprintf(w, "\nexit %d\n", r.ExitCode)
+		return
+	}
+	for _, c := range p.Params {
+		if c.Action == ActionOutOfScope {
+			fmt.Fprintf(w, "not applied  %s: %s\n", c.Param, c.Reason)
+		}
+	}
+	fmt.Fprintln(w, "\nREBOOT REQUIRED. Nothing has taken effect on the running system: GTT is sized when")
+	fmt.Fprintln(w, "amdgpu initialises. After rebooting, run `halo check` to verify the running values.")
+	fmt.Fprintf(w, "\nexit %d\n", r.ExitCode)
+}
