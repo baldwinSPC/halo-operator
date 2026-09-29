@@ -208,6 +208,11 @@ func (in *HaloNodeObservationSpec) DeepCopyInto(out *HaloNodeObservationSpec) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.KernelRelease != nil {
+		in, out := &in.KernelRelease, &out.KernelRelease
+		*out = new(string)
+		**out = **in
+	}
 	if in.ModuleParams != nil {
 		in, out := &in.ModuleParams, &out.ModuleParams
 		*out = make(map[string]string, len(*in))

@@ -84,6 +84,7 @@ func SpecFromReading(r Reading, at metav1.Time) halov1alpha1.HaloNodeObservation
 	return halov1alpha1.HaloNodeObservationSpec{
 		ObservedAt:          at,
 		KernelCmdline:       r.KernelCmdline,
+		KernelRelease:       r.KernelRelease,
 		ModuleParams:        r.ModuleParams,
 		GTTTotalBytes:       r.GTTTotalBytes,
 		GPUBusyPercent:      r.GPUBusyPercent,

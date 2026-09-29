@@ -251,8 +251,8 @@ func TestManagerRunsUnprivileged(t *testing.T) {
 }
 
 // TestAgentReadsTheHostWithoutPrivilege is the pod-level form of the read-only
-// contract: the agent touches exactly two host paths, both read-only, and
-// carries no privilege that could mutate a host even if it wanted to.
+// contract: every host path the agent touches is read-only, and it carries no
+// privilege that could mutate a host even if it wanted to.
 func TestAgentReadsTheHostWithoutPrivilege(t *testing.T) {
 	agent := documentOfKind(t, render(t), "DaemonSet")
 
@@ -262,6 +262,7 @@ func TestAgentReadsTheHostWithoutPrivilege(t *testing.T) {
 		"readOnlyRootFilesystem: true",
 		"- ALL",
 		"path: /proc/cmdline",
+		"path: /proc/sys/kernel/osrelease",
 		"type: File",
 		"path: /sys",
 		"readOnly: true",
@@ -275,10 +276,17 @@ func TestAgentReadsTheHostWithoutPrivilege(t *testing.T) {
 			t.Errorf("the rendered DaemonSet contains %q", forbidden)
 		}
 	}
-	// Both host mounts must be read-only — a writable one would contradict
-	// the operator's whole posture.
-	if got := strings.Count(agent, "readOnly: true"); got < 2 {
-		t.Errorf("only %d of the host mounts are read-only:\n%s", got, agent)
+	// Every host mount must be read-only — a writable one would contradict
+	// the operator's whole posture. Counted against the number of hostPath
+	// volumes rather than a fixed number: a fixed floor stops meaning anything
+	// the moment a mount is added, because the existing read-only ones already
+	// satisfy it and a new writable one slips through.
+	hostPaths := strings.Count(agent, "hostPath:")
+	if hostPaths == 0 {
+		t.Fatalf("the rendered DaemonSet has no hostPath volumes, so this test checks nothing:\n%s", agent)
+	}
+	if got := strings.Count(agent, "readOnly: true"); got < hostPaths {
+		t.Errorf("%d hostPath volumes but only %d read-only mounts:\n%s", hostPaths, got, agent)
 	}
 }
 

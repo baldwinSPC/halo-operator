@@ -68,6 +68,11 @@ spec:
         - name: proc-cmdline
           mountPath: /host/proc/cmdline
           readOnly: true
+        # The running kernel's release (what `uname -r` prints), again one
+        # file rather than the host's /proc/sys.
+        - name: proc-osrelease
+          mountPath: /host/proc/sys/kernel/osrelease
+          readOnly: true
         # /sys is mounted whole because the PCI device directories are a
         # symlink farm into /sys/devices; a narrower mount would dangle.
         - name: sys
@@ -77,6 +82,10 @@ spec:
       - name: proc-cmdline
         hostPath:
           path: /proc/cmdline
+          type: File
+      - name: proc-osrelease
+        hostPath:
+          path: /proc/sys/kernel/osrelease
           type: File
       - name: sys
         hostPath:

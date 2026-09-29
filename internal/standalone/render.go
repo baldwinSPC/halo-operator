@@ -40,6 +40,12 @@ func WriteJSON(w io.Writer, v any) error {
 func RenderInspect(w io.Writer, node string, spec halov1alpha1.HaloNodeObservationSpec) {
 	fmt.Fprintf(w, "halo inspect   node=%s   observed=%s\n\n", node, spec.ObservedAt.UTC().Format(time.RFC3339))
 
+	if spec.KernelRelease == nil {
+		fmt.Fprint(w, "kernel release\n  not observed\n\n")
+	} else {
+		fmt.Fprintf(w, "kernel release\n  %s\n\n", *spec.KernelRelease)
+	}
+
 	fmt.Fprintln(w, "kernel command line")
 	if spec.KernelCmdline == nil {
 		fmt.Fprintln(w, "  not observed")

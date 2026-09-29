@@ -46,6 +46,8 @@ type Reading struct {
 	// KernelCmdline is the raw contents of <procRoot>/cmdline, whitespace
 	// trimmed at the end only.
 	KernelCmdline *string
+	// KernelRelease is <procRoot>/sys/kernel/osrelease, trimmed.
+	KernelRelease *string
 	// ModuleParams is the running value of each readable parameter of the
 	// modules in moduleParamModules, keyed as the kernel command line would
 	// name it ("ttm.pages_limit"). Nil when no module directory could be read
@@ -97,6 +99,18 @@ func (c Collector) Collect() Reading {
 		// the parser's business, not the reader's.
 		s := strings.TrimRight(string(raw), "\n\r \t")
 		r.KernelCmdline = &s
+	}
+
+	releasePath := filepath.Join(procRoot, "sys", "kernel", "osrelease")
+	if raw, err := os.ReadFile(releasePath); err != nil {
+		r.Messages = append(r.Messages, fmt.Sprintf("kernel release: %v", err))
+	} else if rel := strings.TrimSpace(string(raw)); rel == "" {
+		// An empty release is not a kernel version; passing it on would
+		// report "read fine, it is the empty string" for a file that should
+		// never be empty.
+		r.Messages = append(r.Messages, "kernel release: osrelease is empty")
+	} else {
+		r.KernelRelease = &rel
 	}
 
 	params, paramMsgs := readModuleParams(sysRoot)

@@ -93,6 +93,18 @@ spec:
                   distinct from "could not read" (absent) — a parsed map cannot make that
                   distinction survive JSON, because an empty map serializes away.
                 type: string
+              kernelRelease:
+                description: |-
+                  KernelRelease is the release of the running kernel, from
+                  /proc/sys/kernel/osrelease (what `uname -r` prints).
+
+                  Every other reading here is only interpretable against it. On the AMD
+                  Ryzen AI Developer Platform the installed kernels do not boot to the same
+                  memory configuration — one kernel's EFI-partition initramfs carries
+                  /etc/modprobe.d/ttm.conf and another's does not (halo-operator#20) — so a
+                  GTT reading without the kernel it was taken on cannot say whether the
+                  node is configured or merely happened to boot the configured kernel.
+                type: string
               messages:
                 description: |-
                   Messages says, for a human, why readings above are absent — one entry
