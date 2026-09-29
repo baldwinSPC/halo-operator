@@ -5,6 +5,10 @@ image:
   # -- Image tag. Empty means the chart's appVersion, which is what release
   # tooling sets, so pinning here is only for local or pre-release builds.
   tag: ""
+  # -- Content digest (sha256:...). A released chart sets this, so the image
+  # is pulled by digest and the version it names is the bytes it runs. Leave
+  # empty for local builds.
+  digest: ""
   pullPolicy: IfNotPresent
 # -- Image pull secrets, as a list of {name: my-secret}.
 imagePullSecrets: []

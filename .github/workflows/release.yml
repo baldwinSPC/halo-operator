@@ -1,0 +1,215 @@
+# Copyright 2026 the AMD Halo Operator authors
+# SPDX-License-Identifier: Apache-2.0
+
+# A release is a vMAJOR.MINOR.PATCH tag on a commit that is on main and whose
+# own CI passed. It publishes three things, each pinned so that the version a
+# release names is the bytes it ships:
+#
+#   - the operator image, linux/amd64 + linux/arm64, tagged with the version
+#     and referenced by digest;
+#   - the standalone `halo` binaries, with SHA256SUMS;
+#   - the Helm chart, whose version and appVersion are the release's and
+#     whose values pin the image by that digest.
+#
+# Every artifact is verified AFTER it is built rather than trusted from the
+# recipe that built it. A registry saying "arm64" has shipped an x86-64 binary
+# before (glimmer #1571); a Dockerfile saying USER is not the image's config.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+env:
+  IMAGE: ghcr.io/baldwinspc/halo-operator
+
+jobs:
+  release:
+    # GitHub-hosted, not the Spark scale set: this job builds and pushes
+    # images, and the scale set runs in Kubernetes container-hook mode with no
+    # Docker daemon. The Dockerfile cross-compiles, so neither platform is
+    # emulated.
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # the GitHub release
+      packages: write   # the image
+      checks: read      # the tagged commit's own CI result
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history: the on-main check below needs ancestry.
+          fetch-depth: 0
+
+      - name: Version from the tag
+        id: v
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          # Strict: a tag like v1 or v1.0 names an image nobody can order.
+          if ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag ${GITHUB_REF_NAME} is not vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: The tagged commit is on main and its own CI passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::${GITHUB_SHA} is not on main; only main is released"
+            exit 1
+          fi
+          # The verify job of THIS commit. The Spark runners queue, so wait for
+          # it rather than fail a release that was merely early — but never
+          # release on anything other than an explicit success.
+          for _ in $(seq 1 80); do
+            concl=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/check-runs" \
+              --jq '[.check_runs[] | select(.name=="verify")] | .[0] | if . == null then "missing" else (.conclusion // "pending") end')
+            case "$concl" in
+              success) echo "CI verify on ${GITHUB_SHA}: success"; exit 0 ;;
+              pending|missing) sleep 30 ;;
+              *) echo "::error::CI verify on ${GITHUB_SHA} is '${concl}'"; exit 1 ;;
+            esac
+          done
+          echo "::error::CI verify on ${GITHUB_SHA} did not finish within 40 minutes"
+          exit 1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build both platforms without pushing
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          outputs: type=local,dest=out/image
+          push: false
+
+      - name: Each platform's binaries were built for that platform
+        run: |
+          check() {  # <platform dir> <file(1) architecture string>
+            for b in manager agent; do
+              f="out/image/$1/$b"
+              [ -f "$f" ] || { echo "::error::$f is missing from the image"; exit 1; }
+              desc=$(file -b "$f")
+              echo "$1/$b: $desc"
+              case "$desc" in *"$2"*) ;; *) echo "::error::$1/$b is not $2"; exit 1 ;; esac
+              case "$desc" in *"statically linked"*) ;; *) echo "::error::$1/$b is not static; scratch has no libc"; exit 1 ;; esac
+            done
+          }
+          check linux_amd64 "x86-64"
+          check linux_arm64 "ARM aarch64"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # The version only. No :latest — a moving tag makes a deployment
+          # unnameable, and the chart pins the digest anyway.
+          tags: ${{ env.IMAGE }}:${{ steps.v.outputs.version }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.v.outputs.version }}
+            org.opencontainers.image.licenses=Apache-2.0
+          provenance: mode=max
+          sbom: true
+
+      - name: The pushed image runs as a numeric non-root user on every platform
+        run: |
+          # The chart sets runAsNonRoot without runAsUser, so the kubelet only
+          # starts the pod if the IMAGE declares a numeric non-zero user.
+          ref="${IMAGE}@${{ steps.push.outputs.digest }}"
+          for p in linux/amd64 linux/arm64; do
+            docker pull -q --platform "$p" "$ref" >/dev/null
+            user=$(docker inspect --format '{{.Config.User}}' "$ref")
+            echo "$p user: [$user]"
+            case "$user" in
+              ''|0|0:*|root|root:*) echo "::error::$p runs as root ([$user])"; exit 1 ;;
+            esac
+            printf '%s' "${user%%:*}" | grep -Eq '^[0-9]+$' || { echo "::error::$p user [$user] is not numeric"; exit 1; }
+          done
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: halo binaries, verified and checksummed
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+              go build -trimpath -ldflags="-s -w" -o "dist/halo-linux-$arch" ./cmd/halo
+          done
+          file -b dist/halo-linux-amd64 | grep -q "x86-64"     || { echo "::error::halo-linux-amd64 is not x86-64"; exit 1; }
+          file -b dist/halo-linux-arm64 | grep -q "ARM aarch64" || { echo "::error::halo-linux-arm64 is not aarch64"; exit 1; }
+
+      - uses: azure/setup-helm@v4
+        with:
+          # Helm 3, matching the CI runner image. Helm 4 changes lint and
+          # template behaviour and this chart is developed against 3.
+          version: v3.22.0
+
+      - name: Package the chart, pinned to the pushed digest
+        run: |
+          ver="${{ steps.v.outputs.version }}"
+          digest="${{ steps.push.outputs.digest }}"
+          chart=deploy/helm/halo-operator
+          sed -i -E "s/^version: .*/version: ${ver}/; s/^appVersion: .*/appVersion: \"${ver}\"/" "$chart/Chart.yaml"
+          sed -i -E "s|^  digest: \"\"$|  digest: \"${digest}\"|" "$chart/values.yaml"
+          grep -q "^  digest: \"${digest}\"$" "$chart/values.yaml" || { echo "::error::the digest was not written into values.yaml"; exit 1; }
+          helm lint "$chart"
+          # The packaged chart must actually PULL by that digest, not merely
+          # carry it in a value nothing reads.
+          # Counted, not grepped: both workloads (the manager Deployment and
+          # the agent DaemonSet) must pull it. A presence check passes when
+          # only one does.
+          pinned=$(helm template halo "$chart" | grep -cF "image: \"${IMAGE}:${ver}@${digest}\"" || true)
+          if [ "$pinned" != "2" ]; then
+            echo "::error::expected 2 workloads pulling ${IMAGE}:${ver}@${digest}, found ${pinned}"
+            exit 1
+          fi
+          helm package "$chart" -d dist
+          (cd dist && sha256sum halo-linux-* halo-operator-*.tgz > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${{ steps.v.outputs.version }}"
+          digest="${{ steps.push.outputs.digest }}"
+          {
+            echo "## AMD Halo Operator ${ver}"
+            echo
+            echo "**Image** — \`${IMAGE}:${ver}@${digest}\` (linux/amd64, linux/arm64)."
+            echo "The chart below pulls this exact digest."
+            echo
+            echo "**Chart** — \`halo-operator-${ver}.tgz\`:"
+            echo '```sh'
+            echo "helm install halo-operator halo-operator-${ver}.tgz --namespace halo-system --create-namespace"
+            echo '```'
+            echo
+            echo "**Standalone** — \`halo-linux-amd64\` for a Halo, \`halo-linux-arm64\` for arm64 hosts. No Kubernetes needed:"
+            echo '```sh'
+            echo "halo check -policy policy.yaml"
+            echo '```'
+            echo
+            echo "Verify downloads with \`sha256sum -c SHA256SUMS\`."
+            echo
+            echo "**Pulling the image.** This repository is private, so its ghcr package is too. A cluster needs an"
+            echo "image pull secret with \`read:packages\` (set \`imagePullSecrets\` in the chart values)."
+          } > notes.md
+          gh release create "${GITHUB_REF_NAME}" dist/* \
+            --title "AMD Halo Operator ${ver}" --notes-file notes.md --verify-tag

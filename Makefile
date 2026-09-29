@@ -98,3 +98,19 @@ verify-runner-pin: ## Assert every workflow job container is pinned to an immuta
 .PHONY: build-halo
 build-halo: ## Build the standalone halo binary into bin/halo.
 	CGO_ENABLED=0 go build -trimpath -o bin/halo ./cmd/halo
+
+##@ Operator image
+
+# The image the chart runs (/manager and /agent). Releases build and push it
+# from .github/workflows/release.yml, for linux/amd64 and linux/arm64, pinned by
+# digest in the released chart. These targets are for local builds.
+IMG ?= ghcr.io/baldwinspc/halo-operator
+IMG_TAG ?= dev
+
+.PHONY: image
+image: ## Build the operator image for this machine's platform and load it into Docker.
+	docker buildx build --load -t $(IMG):$(IMG_TAG) .
+
+.PHONY: image-multiarch
+image-multiarch: ## Build the operator image for linux/amd64 and linux/arm64 (not loaded; needs a docker-container builder).
+	docker buildx build --platform linux/amd64,linux/arm64 -t $(IMG):$(IMG_TAG) .
