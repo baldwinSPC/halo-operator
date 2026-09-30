@@ -17,11 +17,12 @@ metadata:
 # What a read-only node observer is allowed to do in the cluster: publish
 # observations, and read its own Node to own them. Deliberately absent: any
 # write access to Nodes or anything else — the node agent can never mutate
-# cluster state beyond observations. One honest caveat: create/patch cannot be
-# scoped to the agent's own node name, so a compromised node could publish an
-# observation under another node's name. That is the same trust model NFD's
-# workers carry; pinning the name to the caller's node (a CEL admission policy
-# over the bound token's node claim) is tracked as follow-up hardening.
+# cluster state beyond observations. create/patch cannot be scoped to the
+# agent's own node name, so RBAC alone would let a compromised node publish an
+# observation under another node's name — NFD's workers carry exactly that
+# trust model. agent-admission-policy.yaml closes it: it admits only the
+# observation named after the node in the caller's bound token
+# (agent.pinObservationNames, on by default).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
