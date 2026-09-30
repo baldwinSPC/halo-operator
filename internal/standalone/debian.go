@@ -101,6 +101,22 @@ func (d DebianSystem) ReadFromInitramfs(image, path string) (string, error) {
 	}
 }
 
+// ModprobeFiles unpacks an image once and returns every
+// /etc/modprobe.d/*.conf inside it. Once per image rather than once per file:
+// the boot-image check reads the whole directory, and each unpack of a
+// real image takes seconds.
+func (d DebianSystem) ModprobeFiles(image string) (map[string]string, error) {
+	dir, err := os.MkdirTemp("", "halo-initramfs-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(dir)
+	if out, err := exec.Command("unmkinitramfs", image, dir).CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("unmkinitramfs %s: %v\n%s", image, err, lastLines(string(out), 6))
+	}
+	return modprobeFilesIn(dir)
+}
+
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	if len(lines) > n {

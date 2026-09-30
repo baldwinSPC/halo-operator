@@ -200,6 +200,38 @@ Run it unprivileged and parameters behind mode-0400 files report as not
 observed; run it as root and they become real verdicts. It never guesses in
 between.
 
+### `check` as root: every boot image, not just the running kernel
+
+A node can be right on disk and right in its running kernel, and still come
+up at the kernel-default GTT the next time a different kernel boots. The
+physical unit was in exactly that state (#20). Its older kernel's initramfs on
+the EFI system partition, which is what the boot loader actually reads,
+carried no `ttm.conf`, while the `/boot` copy did and every other check
+reported the node as fine.
+
+So `halo check`, run as root, also opens every initramfs image a boot could
+load. That is the `/boot` copy and the ESP copy for every kernel in
+`/lib/modules`, the same positive list `apply -execute` verifies. It reports
+each image as `boot-images`. The component compares the `/etc/modprobe.d`
+files that set the policy's module parameters, in both directions:
+
+- a governed file missing from an image is drift;
+- a copy that differs from the one on disk is drift;
+- an image carrying a governed file the disk no longer has is drift.
+
+Files that set nothing the policy governs are not compared. An image that
+can't be unpacked is not observed, never fine.
+
+Run unprivileged, the check is skipped and reported as skipped. It doesn't
+change the exit code, so an unprivileged `check` answers exactly as it did
+before. `-boot-images=false` skips it as root too.
+
+The remedy for a drifted image is `update-initramfs -u -k all` as root, then
+`check` again. Re-checking matters because the hook that copies images to the
+ESP exits 0 even when it copies nothing. `apply -execute` doesn't repair this
+case: it rebuilds only when it has a modprobe.d edit to make, and a node whose
+disk is already right has none.
+
 ### `apply`: plan by default, execute on request
 
 `halo apply` computes the exact `/etc/modprobe.d` edits that would bring
