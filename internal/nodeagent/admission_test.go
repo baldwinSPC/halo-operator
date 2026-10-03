@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
@@ -26,6 +28,15 @@ import (
 // service-account token's node claim.
 const nodeNameClaim = "authentication.kubernetes.io/node-name"
 
+// releaseNamespace is the namespace the chart is rendered into. Passed
+// explicitly, never left to helm: helm otherwise takes the ambient one — the
+// kube context's, or inside a pod its service account's — so on the ARC
+// runner the chart rendered into arc-runners, a namespace this API server does
+// not have, and the test failed applying the ServiceAccount before it reached
+// the policy. The same test passed on a workstation, where the ambient
+// namespace is default.
+const releaseNamespace = "halo-pin-test"
+
 // renderAgentAdmission renders the chart's agent RBAC and admission policy.
 // The objects under test are the ones the chart ships, not a copy of them: a
 // test holding its own policy would keep passing after the chart's drifted.
@@ -36,6 +47,7 @@ func renderAgentAdmission(t *testing.T) []*unstructured.Unstructured {
 		t.Skip("helm is not installed, so the chart's admission policy cannot be rendered")
 	}
 	out, err := exec.Command(helm, "template", "halo", filepath.Join("..", "..", "deploy", "helm", "halo-operator"),
+		"--namespace", releaseNamespace,
 		"--show-only", "templates/agent-rbac.yaml",
 		"--show-only", "templates/agent-admission-policy.yaml").CombinedOutput()
 	if err != nil {
@@ -105,6 +117,13 @@ func TestTheChartPinsEachObservationToItsWritersNode(t *testing.T) {
 	ctx := context.Background()
 
 	objs := renderAgentAdmission(t)
+	// The release namespace the chart's ServiceAccount lives in. Not deleted
+	// afterwards: envtest runs no namespace controller, so a deletion would
+	// only leave it Terminating, and nothing else in this package uses it.
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: releaseNamespace}}
+	if err := k8sClient.Create(ctx, ns); err != nil && !apierrors.IsAlreadyExists(err) {
+		t.Fatalf("create the release namespace: %v", err)
+	}
 	for _, u := range objs {
 		if err := k8sClient.Create(ctx, u); err != nil {
 			t.Fatalf("apply the chart's %s %s: %v", u.GetKind(), u.GetName(), err)
