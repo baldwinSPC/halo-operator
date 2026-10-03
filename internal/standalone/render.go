@@ -134,8 +134,14 @@ func RenderCheck(w io.Writer, r Report, policyPath string) {
 		for _, p := range c.Probes {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(probeResult(p.Result)), p.Probe, p.Message)
 		}
+		for _, im := range c.Images {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(im.Result), im.Image, im.Detail)
+		}
 		tw.Flush()
 		if hint := healthHint(c); hint != "" {
+			fmt.Fprintf(w, "  hint: %s\n", hint)
+		}
+		if hint := bootImagesHint(c); hint != "" {
 			fmt.Fprintf(w, "  hint: %s\n", hint)
 		}
 	}
@@ -186,6 +192,18 @@ func healthHint(c ComponentReport) string {
 	return fmt.Sprintf("%s have no validated kernel-log reader, so they can never be observed yet; "+
 		"set healthChecks.probes to [clock-under-load] to make health decidable today",
 		strings.Join(blocked, " and "))
+}
+
+// bootImagesHint names the remedy for stale boot images. Not `halo apply
+// -execute`: it rebuilds only when it has a modprobe.d edit to make, and a
+// node whose disk is already right has none — which is exactly the #20 state.
+func bootImagesHint(c ComponentReport) string {
+	if c.Name != BootImagesComponent || c.State != halov1alpha1.ComponentDegraded {
+		return ""
+	}
+	return "rebuild every installed kernel's image with `update-initramfs -u -k all`, as root; its " +
+		"systemd-boot hook copies each one to the EFI system partition. Then run halo check again, " +
+		"since that hook exits 0 even when it copies nothing"
 }
 
 func marker(result string) string {

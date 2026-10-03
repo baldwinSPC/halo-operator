@@ -95,6 +95,7 @@ type ComponentReport struct {
 	Message string                      `json:"message,omitempty"`
 	Params  []ParamLine                 `json:"params,omitempty"`
 	Probes  []ProbeLine                 `json:"probes,omitempty"`
+	Images  []ImageLine                 `json:"images,omitempty"`
 	counted bool                        // whether it contributes to the Outcome
 }
 
@@ -153,6 +154,21 @@ func Evaluate(node string, spec halov1alpha1.HaloNodeObservationSpec, cfg halov1
 	}
 	r.Outcome, r.ExitCode = outcome(r.Components)
 	return r
+}
+
+// AddComponent adds a component judged outside Evaluate and recomputes the
+// outcome with it.
+//
+// The boot-image check is the one that needs this, and it stays outside
+// Evaluate on purpose. Evaluate is the judgement the controller shares, and
+// the controller's input is the agent's unprivileged reading; the boot images
+// live on the EFI system partition, which only root can read. Adding them
+// inside Evaluate would make the two modes disagree about the same node by
+// construction — which is what TestStandaloneAgreesWithTheController exists
+// to prevent.
+func (r *Report) AddComponent(c ComponentReport) {
+	r.Components = append(r.Components, c)
+	r.Outcome, r.ExitCode = outcome(r.Components)
 }
 
 func evaluateMemory(node string, spec *halov1alpha1.HaloNodeObservationSpec, s halov1alpha1.HaloDeviceConfigSpec) ComponentReport {
