@@ -1,0 +1,72 @@
+{{- if and .Values.agent.enabled .Values.agent.pinObservationNames }}
+# Pins every HaloNodeObservation the node agent writes to the node it runs on
+# (halo-operator#10).
+#
+# RBAC cannot do this: create and patch cannot be scoped to a resource name,
+# so the agent's ClusterRole lets any agent write any node's observation, and
+# a compromised node could feed the controller fiction about a healthy peer.
+# The fix reads the node from the caller's own credential. A pod's bound
+# service-account token carries the node it was issued on, and the API server
+# exposes it as request.userInfo.extra["authentication.kubernetes.io/node-name"].
+#
+# It fails closed. A request from the agent whose token carries no node claim
+# is refused, never waved through: an unpinned write is the thing this policy
+# exists to stop.
+#
+# Kubernetes 1.30 or newer: ValidatingAdmissionPolicy is GA there, and the node
+# claim is on by default (ServiceAccountTokenPodNodeInfo, GA in 1.32). An older
+# API server has no admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy,
+# so the install fails naming it; set agent.pinObservationNames=false there.
+# The floor is left to the API server rather than templated against
+# .Capabilities.KubeVersion, which an offline `helm template` fills with a
+# default that differs between Helm releases.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "halo-operator.fullname" . }}-agent-observation-name
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["amd.halo.glimmer.ai"]
+      apiVersions: ["*"]
+      operations: ["CREATE", "UPDATE"]
+      resources: ["halonodeobservations"]
+  matchConditions:
+  # Only the agent is constrained. The controller never writes observations,
+  # and a cluster administrator repairing one by hand is not a node.
+  - name: written-by-the-node-agent
+    expression: >-
+      request.userInfo.username ==
+      "system:serviceaccount:{{ .Release.Namespace }}:{{ include "halo-operator.agentServiceAccountName" . }}"
+  validations:
+  - expression: >-
+      has(request.userInfo.extra) &&
+      'authentication.kubernetes.io/node-name' in request.userInfo.extra
+    message: >-
+      the node agent's token carries no node claim
+      (authentication.kubernetes.io/node-name), so the observation it writes
+      cannot be pinned to its node; this needs Kubernetes 1.30 or newer with
+      ServiceAccountTokenPodNodeInfo enabled, or agent.pinObservationNames=false
+  - expression: >-
+      !has(request.userInfo.extra) ||
+      !('authentication.kubernetes.io/node-name' in request.userInfo.extra) ||
+      object.metadata.name == request.userInfo.extra['authentication.kubernetes.io/node-name'][0]
+    messageExpression: >-
+      'the node agent on ' + request.userInfo.extra['authentication.kubernetes.io/node-name'][0] +
+      ' may write only its own HaloNodeObservation, not ' + object.metadata.name
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "halo-operator.fullname" . }}-agent-observation-name
+  labels:
+    {{- include "halo-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-agent
+spec:
+  policyName: {{ include "halo-operator.fullname" . }}-agent-observation-name
+  validationActions: [Deny]
+{{- end }}

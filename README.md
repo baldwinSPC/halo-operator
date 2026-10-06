@@ -91,6 +91,22 @@ across controller restarts and `kubectl get halonodeobservations` shows
 exactly what each node claimed. And it is the shape this ecosystem already
 reads — NFD's `NodeFeature` works the same way.
 
+**Each observation is pinned to the node that writes it.** RBAC can't scope
+create or patch to a resource name, so on its own it would let a compromised
+node's agent write a healthy-looking observation for a peer. NFD's workers
+carry exactly that trust model. The chart closes the gap with a
+`ValidatingAdmissionPolicy`, on by default through `agent.pinObservationNames`.
+It admits a write from the agent's service account only when the
+observation's name equals the node in the caller's own bound token
+(`authentication.kubernetes.io/node-name`), and it fails closed when the
+token carries no node claim.
+
+The policy needs Kubernetes 1.30 or newer. An older API server refuses the
+install by naming the missing `ValidatingAdmissionPolicy` kind; set
+`agent.pinObservationNames=false` there. A test renders the chart's policy
+into a real API server and impersonates the agent with and without its node
+claim, so the shipped object is what's verified.
+
 The kernel command line is published raw and parsed controller-side, so
 "read fine, nothing set" (empty) and "could not read" (absent) stay distinct
 through serialization, and parse-rule fixes ship without redeploying agents.

@@ -87,6 +87,12 @@ agent:
   enabled: true
   # -- How often each node is read and its observation published.
   interval: 1m
+  # -- Admit only the observation named after the node the agent runs on, read
+  # from its bound service-account token (a ValidatingAdmissionPolicy). Without
+  # it, RBAC lets any node's agent write any node's observation. Needs
+  # Kubernetes 1.30 or newer; an older API server refuses the install by
+  # naming the missing ValidatingAdmissionPolicy kind — set this to false there.
+  pinObservationNames: true
   # -- Nodes to observe. The default is the label Node Feature Discovery
   # applies to AMD GPU nodes via the rule AMD's GPU Operator installs, which
   # is also what an empty HaloDeviceConfig nodeSelector targets.

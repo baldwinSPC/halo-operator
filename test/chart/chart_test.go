@@ -15,6 +15,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	"sigs.k8s.io/yaml"
 )
 
 const chartPath = "deploy/helm/halo-operator"
@@ -116,6 +120,8 @@ func TestDefaultInstallRendersEveryObject(t *testing.T) {
 		"RoleBinding",
 		"Deployment",
 		"DaemonSet",
+		"ValidatingAdmissionPolicy",
+		"ValidatingAdmissionPolicyBinding",
 	} {
 		if !hasKind(rendered, kind) {
 			t.Errorf("a default install renders no %s", kind)
@@ -368,6 +374,93 @@ func TestAgentOptOut(t *testing.T) {
 	if !hasKind(rendered, "Deployment") {
 		t.Error("disabling the agent also removed the manager")
 	}
+	if hasKind(rendered, "ValidatingAdmissionPolicy") || hasKind(rendered, "ValidatingAdmissionPolicyBinding") {
+		t.Error("the agent's admission policy is still rendered with agent.enabled=false")
+	}
+}
+
+// The policy that pins each observation to its writer's node (#10) must
+// constrain exactly the identity the agent runs as. A username that drifts from
+// the agent's service account leaves the policy matching nobody, and it would
+// render, install and report nothing wrong. So the expected username is read
+// off the ClusterRoleBinding that grants the agent its write, not restated.
+func TestAgentObservationNamesArePinned(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"default install", []string{"--namespace", "halo-system"}},
+		{"a supplied service account", []string{"--namespace", "halo-system",
+			"--set", "serviceAccount.create=false", "--set", "serviceAccount.name=byo-account"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rendered := render(t, tc.args...)
+
+			var grant *rbacv1.ClusterRoleBinding
+			for _, doc := range documentsOfKind(rendered, "ClusterRoleBinding") {
+				var b rbacv1.ClusterRoleBinding
+				if err := yaml.Unmarshal([]byte(doc), &b); err != nil {
+					t.Fatalf("decode ClusterRoleBinding: %v", err)
+				}
+				if strings.HasSuffix(b.Name, "-agent") {
+					grant = &b
+				}
+			}
+			if grant == nil || len(grant.Subjects) != 1 || grant.Subjects[0].Kind != "ServiceAccount" {
+				t.Fatalf("no single-ServiceAccount agent ClusterRoleBinding in the rendered chart: %+v", grant)
+			}
+			wantUser := "system:serviceaccount:" + grant.Subjects[0].Namespace + ":" + grant.Subjects[0].Name
+
+			var policy admissionregistrationv1.ValidatingAdmissionPolicy
+			if err := yaml.Unmarshal([]byte(documentOfKind(t, rendered, "ValidatingAdmissionPolicy")), &policy); err != nil {
+				t.Fatalf("decode ValidatingAdmissionPolicy: %v", err)
+			}
+			var binding admissionregistrationv1.ValidatingAdmissionPolicyBinding
+			if err := yaml.Unmarshal([]byte(documentOfKind(t, rendered, "ValidatingAdmissionPolicyBinding")), &binding); err != nil {
+				t.Fatalf("decode ValidatingAdmissionPolicyBinding: %v", err)
+			}
+
+			if len(policy.Spec.MatchConditions) != 1 ||
+				!strings.Contains(policy.Spec.MatchConditions[0].Expression, `"`+wantUser+`"`) {
+				t.Errorf("the policy does not match exactly the agent's identity %q: %+v", wantUser, policy.Spec.MatchConditions)
+			}
+			if policy.Spec.FailurePolicy == nil || *policy.Spec.FailurePolicy != admissionregistrationv1.Fail {
+				t.Error("the policy does not fail closed")
+			}
+			rules := policy.Spec.MatchConstraints.ResourceRules
+			if len(rules) != 1 || strings.Join(rules[0].Resources, ",") != "halonodeobservations" ||
+				strings.Join(rules[0].APIGroups, ",") != "amd.halo.glimmer.ai" {
+				t.Errorf("the policy does not target halonodeobservations alone: %+v", rules)
+			}
+			var ops []string
+			if len(rules) == 1 {
+				for _, op := range rules[0].Operations {
+					ops = append(ops, string(op))
+				}
+			}
+			// UPDATE as well as CREATE: the agent writes with server-side apply,
+			// so every write after the first is an update.
+			if strings.Join(ops, ",") != "CREATE,UPDATE" {
+				t.Errorf("the policy covers %v, want CREATE and UPDATE", ops)
+			}
+			if binding.Spec.PolicyName != policy.Name {
+				t.Errorf("the binding binds %q, not the policy %q", binding.Spec.PolicyName, policy.Name)
+			}
+			if len(binding.Spec.ValidationActions) != 1 || binding.Spec.ValidationActions[0] != admissionregistrationv1.Deny {
+				t.Errorf("the binding's actions are %v; a policy that only audits pins nothing", binding.Spec.ValidationActions)
+			}
+		})
+	}
+
+	t.Run("agent.pinObservationNames=false renders neither object", func(t *testing.T) {
+		rendered := render(t, "--set", "agent.pinObservationNames=false")
+		if hasKind(rendered, "ValidatingAdmissionPolicy") || hasKind(rendered, "ValidatingAdmissionPolicyBinding") {
+			t.Error("the admission policy is still rendered with agent.pinObservationNames=false")
+		}
+		if !hasKind(rendered, "DaemonSet") {
+			t.Error("opting out of the policy also removed the agent")
+		}
+	})
 }
 
 // TestManagerRoleReadsObservations extends the RBAC drift guard to the new
