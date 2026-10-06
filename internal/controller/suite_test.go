@@ -23,6 +23,7 @@ import (
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 )
 
 // testEnv is the shared control plane. It is package-level because starting a
@@ -151,7 +152,7 @@ func TestCRDAcceptsTheSample(t *testing.T) {
 			},
 			MinEffectiveGPUMemoryGiB: 100,
 		},
-		RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Backend: "vulkan"},
+		RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Backends: []string{"vulkan", "rocm"}},
 	})
 }
 
@@ -164,7 +165,7 @@ func TestCRDRejectsAnUnknownBackend(t *testing.T) {
 	cfg := &halov1alpha1.HaloDeviceConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "bad-backend"},
 		Spec: halov1alpha1.HaloDeviceConfigSpec{
-			RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Backend: "cuda"},
+			RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Backends: []string{"vulkan", "cuda"}},
 		},
 	}
 	err := k8sClient.Create(context.Background(), cfg)
@@ -208,6 +209,7 @@ func TestReconcileWithoutObserversReportsNotObserved(t *testing.T) {
 
 	for _, conditionType := range []string{
 		halov1alpha1.ConditionMemoryPolicyCompliant,
+		halov1alpha1.ConditionBackendsAvailable,
 		halov1alpha1.ConditionNodesHealthy,
 	} {
 		c := conditionOf(got, conditionType)
@@ -270,7 +272,10 @@ func TestReconcilePersistsDrift(t *testing.T) {
 }
 
 // TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy walks the whole
-// chain: both observers supply healthy readings, and Ready becomes True.
+// chain: every observer supplies healthy readings for a config that leaves the
+// runtime profile and the health checks at their defaults, and Ready becomes
+// True. Until #27 the runtime profile was always NotImplemented and could not
+// be disabled, so Ready could never be True on any config.
 func TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy(t *testing.T) {
 	requireEnvtest(t)
 
@@ -280,14 +285,13 @@ func TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy(t *testing.T) 
 		},
 	})
 
-	// runtime-profile is still unimplemented and would block Ready, so this
-	// asserts the memory and health components reach Ready on their own.
 	r := &HaloDeviceConfigReconciler{
 		Client: k8sClient,
 		MemoryObserver: stubObserver{observations: []memorypolicy.Observation{{
 			Node:         "halo-1",
 			KernelParams: map[string]string{"amd_iommu": "off"},
 		}}},
+		RuntimeObserver: stubRuntimeObserver{observations: []runtimeprofile.Observation{bothBackends("halo-1")}},
 		HealthObserver: stubHealthObserver{observations: []healthchecks.Observation{{
 			Node:                "halo-1",
 			GPUBusyPercent:      i32(99),
@@ -301,14 +305,16 @@ func TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy(t *testing.T) 
 
 	for _, conditionType := range []string{
 		halov1alpha1.ConditionMemoryPolicyCompliant,
+		halov1alpha1.ConditionBackendsAvailable,
 		halov1alpha1.ConditionNodesHealthy,
+		halov1alpha1.ConditionReady,
 	} {
 		c := conditionOf(got, conditionType)
 		if c == nil || c.Status != metav1.ConditionTrue {
 			t.Errorf("%s = %v, want True", conditionType, c)
 		}
 	}
-	for _, name := range []string{componentMemoryPolicy, componentHealthChecks} {
+	for _, name := range []string{componentMemoryPolicy, componentRuntimeProfile, componentHealthChecks} {
 		component := componentOf(got, name)
 		if component == nil || component.State != halov1alpha1.ComponentReady {
 			t.Errorf("%s component = %v, want Ready", name, component)

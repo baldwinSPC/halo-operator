@@ -17,15 +17,19 @@ func ptr[T any](v T) *T { return &v }
 // Platform (amd-halo, kernel 6.18.44+rex+5-amd64) on 2026-09-27, unprivileged.
 // ttm is sized by /etc/modprobe.d/ttm.conf, so ttm.pages_limit appears as a
 // module parameter and nowhere on the command line; amdgpu's parameters are
-// mode 0400 and so are absent.
+// mode 0400 and so are absent. The render node and the KFD target come from
+// #8's reading of the same unit on 2026-09-14 (/dev/dri/renderD128, and KFD
+// topology node 1 at gfx_target_version 110501).
 func amdHaloSpec() halov1alpha1.HaloNodeObservationSpec {
 	return halov1alpha1.HaloNodeObservationSpec{
-		KernelCmdline:  ptr(`initrd=\amd-ryzen-ai-developer-platform\6.18.44+rex+5-amd64\initrd.img-6.18.44+rex+5-amd64 root=UUID=643b044c-c24b-418b-8ba5-72632dcb1892 splash quiet loglevel=3`),
-		ModuleParams:   map[string]string{"ttm.pages_limit": "24692260", "ttm.page_pool_size": "16395959"},
-		GTTTotalBytes:  ptr(int64(101139496960)),
-		GPUBusyPercent: ptr(int32(0)),
-		SCLKMHz:        ptr(int32(600)),
-		RatedSCLKMHz:   ptr(int32(2900)),
+		KernelCmdline:    ptr(`initrd=\amd-ryzen-ai-developer-platform\6.18.44+rex+5-amd64\initrd.img-6.18.44+rex+5-amd64 root=UUID=643b044c-c24b-418b-8ba5-72632dcb1892 splash quiet loglevel=3`),
+		ModuleParams:     map[string]string{"ttm.pages_limit": "24692260", "ttm.page_pool_size": "16395959"},
+		GTTTotalBytes:    ptr(int64(101139496960)),
+		GPUBusyPercent:   ptr(int32(0)),
+		SCLKMHz:          ptr(int32(600)),
+		RatedSCLKMHz:     ptr(int32(2900)),
+		DRMRenderNode:    ptr("renderD128"),
+		GFXTargetVersion: ptr(int32(110501)),
 	}
 }
 
@@ -114,9 +118,46 @@ func TestExitCodesCarryTheThreeValuedAnswer(t *testing.T) {
 			"nothing enabled establishes nothing",
 			amdHaloSpec(),
 			halov1alpha1.HaloDeviceConfigSpec{
-				MemoryPolicy: halov1alpha1.MemoryPolicySpec{Enabled: ptr(false)},
-				HealthChecks: halov1alpha1.HealthChecksSpec{Enabled: ptr(false)},
+				MemoryPolicy:   halov1alpha1.MemoryPolicySpec{Enabled: ptr(false)},
+				RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Enabled: ptr(false)},
+				HealthChecks:   halov1alpha1.HealthChecksSpec{Enabled: ptr(false)},
 			},
+			OutcomeNotObserved, ExitNotObserved,
+		},
+		{
+			// The runtime profile counts toward the answer now that it is
+			// implemented: a kernel without KFD cannot run ROCm, observed.
+			"a node without KFD cannot run the default backends",
+			func() halov1alpha1.HaloNodeObservationSpec {
+				s := amdHaloSpec()
+				s.GFXTargetVersion = ptr(int32(0))
+				return s
+			}(),
+			platformPolicy(),
+			OutcomeDrifted, ExitDrifted,
+		},
+		{
+			"the same node passes when only vulkan is declared",
+			func() halov1alpha1.HaloNodeObservationSpec {
+				s := amdHaloSpec()
+				s.GFXTargetVersion = ptr(int32(0))
+				return s
+			}(),
+			func() halov1alpha1.HaloDeviceConfigSpec {
+				p := platformPolicy()
+				p.RuntimeProfile.Backends = []string{"vulkan"}
+				return p
+			}(),
+			OutcomeCompliant, ExitCompliant,
+		},
+		{
+			"an unread render node is not observed, never unavailable",
+			func() halov1alpha1.HaloNodeObservationSpec {
+				s := amdHaloSpec()
+				s.DRMRenderNode = nil
+				return s
+			}(),
+			platformPolicy(),
 			OutcomeNotObserved, ExitNotObserved,
 		},
 	}
@@ -187,6 +228,21 @@ func TestLoadPolicy(t *testing.T) {
 	typo := write("typo.yaml", "kind: HaloDeviceConfig\nspec:\n  memoryPolicy:\n    expectedKernelArg:\n      ttm.pages_limit: \"1\"\n")
 	if _, err := LoadPolicy(typo); err == nil {
 		t.Error("a misspelled policy key was accepted")
+	}
+
+	// runtimeProfile.backend was the node-wide backend choice, removed when
+	// the stanza was rescoped to what a node can report (#27). A policy that
+	// still sets it is refused rather than silently ignored.
+	oldBackend := write("old-backend.yaml", "kind: HaloDeviceConfig\nspec:\n  runtimeProfile:\n    backend: vulkan\n")
+	if _, err := LoadPolicy(oldBackend); err == nil {
+		t.Error("the removed runtimeProfile.backend field was accepted")
+	}
+
+	// runtimeImages has a field per backend, so a misspelt backend is an
+	// error rather than a catalogue entry no workload will ever look up.
+	misspelt := write("misspelt.yaml", "kind: HaloDeviceConfig\nspec:\n  runtimeProfile:\n    runtimeImages:\n      rcom: example.com/rocm@sha256:0\n")
+	if _, err := LoadPolicy(misspelt); err == nil {
+		t.Error("a runtime image under a misspelt backend was accepted")
 	}
 
 	wrongKind := write("wrong.yaml", "kind: ConfigMap\nspec: {}\n")

@@ -1,5 +1,5 @@
 # A typical Strix Halo cluster config. Every stanza is optional; enabled
-# components default to on, the backend defaults to vulkan.
+# components default to on, and every node must be able to run both backends.
 apiVersion: amd.halo.glimmer.ai/v1alpha1
 kind: HaloDeviceConfig
 metadata:
@@ -12,4 +12,6 @@ spec:
       ttm.pages_limit: "32505856"
     minEffectiveGPUMemoryGiB: 100
   runtimeProfile:
-    backend: vulkan
+    # The backends every node must be able to run. Which one a workload uses
+    # is the workload's choice; the node only has to expose what each needs.
+    backends: [vulkan, rocm]

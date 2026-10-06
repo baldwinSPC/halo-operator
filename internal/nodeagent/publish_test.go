@@ -129,11 +129,35 @@ func TestPublishPreservesAbsenceThroughTheAPIServer(t *testing.T) {
 			t.Errorf("stored spec is missing %q, which was measured", want)
 		}
 	}
-	for _, absent := range []string{"gpuBusyPercent", "sclkMHz", "ratedSCLKMHz", "permissionFaults", "queueCreateFailures"} {
+	for _, absent := range []string{"gpuBusyPercent", "sclkMHz", "ratedSCLKMHz", "permissionFaults", "queueCreateFailures",
+		"drmRenderNode", "gfxTargetVersion"} {
 		if v, ok := spec[absent]; ok {
 			t.Errorf("stored spec contains %q = %v for a reading that was never taken; "+
 				"absence did not survive the round trip", absent, v)
 		}
+	}
+}
+
+// TestPublishKeepsAnEmptyRenderNodeAndAZeroTarget: both backend readings use
+// their zero value as a reading ("the kernel registered none"), so both must
+// reach the API server as present fields. Dropped, they would read as unread
+// and a node that cannot run a backend would hold the condition at Unknown.
+func TestPublishKeepsAnEmptyRenderNodeAndAZeroTarget(t *testing.T) {
+	requireEnvtest(t)
+	node := createNode(t, "halo-pub-zero")
+
+	zero := int32(0)
+	p := Publisher{Client: k8sClient, NodeName: node.Name}
+	if err := p.Publish(context.Background(), Reading{DRMRenderNode: str(""), GFXTargetVersion: &zero}, metav1.Now()); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	spec := specFields(t, node.Name)
+	if v, ok := spec["drmRenderNode"]; !ok || v != "" {
+		t.Errorf("drmRenderNode = %v (present %v), want a present empty string", v, ok)
+	}
+	if v, ok := spec["gfxTargetVersion"]; !ok || v != int64(0) {
+		t.Errorf("gfxTargetVersion = %v (%T, present %v), want a present 0", v, v, ok)
 	}
 }
 

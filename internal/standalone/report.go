@@ -6,9 +6,10 @@
 //
 // It is not a second implementation. Every decision goes through the same
 // functions the cluster path uses: the reading is lifted by
-// nodeagent.SpecFromReading, translated by observe.MemoryObservation and
-// observe.HealthObservation, and judged by the memorypolicy and healthchecks
-// packages. The only thing this package removes is the transport — the
+// nodeagent.SpecFromReading, translated by observe.MemoryObservation,
+// observe.RuntimeObservation and observe.HealthObservation, and judged by the
+// memorypolicy, runtimeprofile and healthchecks packages. The only thing this
+// package removes is the transport — the
 // HaloNodeObservation round trip through an API server — so a node judged
 // here and a node judged by the controller get the same answer for the same
 // reading, by construction rather than by agreement.
@@ -31,6 +32,7 @@ import (
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
 	"github.com/baldwinSPC/halo-operator/internal/observe"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 )
 
 // Exit codes. The first three are the operator's answer about the node; the
@@ -87,16 +89,26 @@ type ProbeLine struct {
 	Message string `json:"message"`
 }
 
+// BackendLine is one compute backend's outcome. It mirrors
+// runtimeprofile.BackendResult with serialization tags, as ProbeLine does for
+// the health probes.
+type BackendLine struct {
+	Backend string `json:"backend"`
+	Result  string `json:"result"`
+	Message string `json:"message"`
+}
+
 // ComponentReport is one component's state, in the same vocabulary the
 // HaloDeviceConfig status uses.
 type ComponentReport struct {
-	Name    string                      `json:"name"`
-	State   halov1alpha1.ComponentState `json:"state"`
-	Message string                      `json:"message,omitempty"`
-	Params  []ParamLine                 `json:"params,omitempty"`
-	Probes  []ProbeLine                 `json:"probes,omitempty"`
-	Images  []ImageLine                 `json:"images,omitempty"`
-	counted bool                        // whether it contributes to the Outcome
+	Name     string                      `json:"name"`
+	State    halov1alpha1.ComponentState `json:"state"`
+	Message  string                      `json:"message,omitempty"`
+	Params   []ParamLine                 `json:"params,omitempty"`
+	Probes   []ProbeLine                 `json:"probes,omitempty"`
+	Backends []BackendLine               `json:"backends,omitempty"`
+	Images   []ImageLine                 `json:"images,omitempty"`
+	counted  bool                        // whether it contributes to the Outcome
 }
 
 // Report is the evaluation of one node against one policy.
@@ -144,13 +156,8 @@ func Evaluate(node string, spec halov1alpha1.HaloNodeObservationSpec, cfg halov1
 
 	r.Components = []ComponentReport{
 		evaluateMemory(node, &spec, resolved),
+		evaluateRuntime(node, &spec, resolved),
 		evaluateHealth(node, &spec, resolved),
-		{
-			Name:  "runtime-profile",
-			State: halov1alpha1.ComponentNotImplemented,
-			Message: "not implemented yet; reported for completeness and excluded from the exit code, " +
-				"since it says nothing about this node",
-		},
 	}
 	r.Outcome, r.ExitCode = outcome(r.Components)
 	return r
@@ -264,6 +271,33 @@ func evaluateHealth(node string, spec *halov1alpha1.HaloNodeObservationSpec, s h
 	case healthchecks.ResultHealthy:
 		c.State = halov1alpha1.ComponentReady
 	case healthchecks.ResultUnhealthy:
+		c.State = halov1alpha1.ComponentDegraded
+	default:
+		c.State = halov1alpha1.ComponentNotObserved
+	}
+	return c
+}
+
+func evaluateRuntime(node string, spec *halov1alpha1.HaloNodeObservationSpec, s halov1alpha1.HaloDeviceConfigSpec) ComponentReport {
+	c := ComponentReport{Name: "runtime-profile"}
+	if !*s.RuntimeProfile.Enabled {
+		c.State = halov1alpha1.ComponentDisabled
+		c.Message = "disabled by the policy"
+		return c
+	}
+	c.counted = true
+
+	obs := observe.RuntimeObservation(node, spec)
+	results := runtimeprofile.Evaluate(s.RuntimeProfile.Backends, obs)
+	for _, br := range results {
+		c.Backends = append(c.Backends, BackendLine{Backend: br.Backend, Result: string(br.Result), Message: br.Message})
+	}
+	summary := runtimeprofile.Summarize(results)
+	c.Message = summary.Message
+	switch summary.Result {
+	case runtimeprofile.ResultAvailable:
+		c.State = halov1alpha1.ComponentReady
+	case runtimeprofile.ResultUnavailable:
 		c.State = halov1alpha1.ComponentDegraded
 	default:
 		c.State = halov1alpha1.ComponentNotObserved

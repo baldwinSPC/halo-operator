@@ -16,26 +16,6 @@ import (
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
 )
 
-func TestComponentStatusesDefaultSpec(t *testing.T) {
-	got := componentStatuses(halov1alpha1.HaloDeviceConfigSpec{}.WithDefaults(), metav1.Now())
-
-	// Only runtime-profile remains here. memory-policy and health-checks are
-	// implemented, so their statuses come from their own evaluators and
-	// reporting them as "not implemented" would be a lie.
-	if len(got) != 1 {
-		t.Fatalf("got %d components, want 1", len(got))
-	}
-	if got[0].Name != componentRuntimeProfile {
-		t.Errorf("component = %s, want %s", got[0].Name, componentRuntimeProfile)
-	}
-	if got[0].State != halov1alpha1.ComponentNotImplemented {
-		t.Errorf("state = %s, want NotImplemented", got[0].State)
-	}
-	if got[0].LastObserved.IsZero() {
-		t.Errorf("component has no observation timestamp")
-	}
-}
-
 // stubObserver returns a fixed set of observations, so every decision below the
 // observation boundary is exercised without a node or a GPU.
 type stubObserver struct {

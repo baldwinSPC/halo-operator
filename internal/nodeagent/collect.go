@@ -20,7 +20,8 @@
 //
 //   - Only kernel-documented amdgpu ABI is read (Documentation/gpu/amdgpu and
 //     Documentation/ABI): mem_info_gtt_total, gpu_busy_percent, pp_dpm_sclk,
-//     and the generic PCI attributes vendor, class and driver. What is NOT yet
+//     the generic PCI attributes vendor, class and driver, the device's DRM
+//     minors, and KFD's topology properties. What is NOT yet
 //     validated is how the first physical gfx1151 unit presents them — device
 //     enumeration, ladder shape, counter population (amd-smi is documented
 //     blind on APUs; sysfs is expected 1:1 but expected is not observed).
@@ -30,7 +31,10 @@
 package nodeagent
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -61,6 +65,12 @@ type Reading struct {
 	SCLKMHz *int32
 	// RatedSCLKMHz is the top of the pp_dpm_sclk ladder.
 	RatedSCLKMHz *int32
+	// DRMRenderNode is the render node the kernel registered for the device,
+	// "" when its drm directory lists none.
+	DRMRenderNode *string
+	// GFXTargetVersion is KFD's gfx_target_version for the GPU agent, 0 when
+	// KFD lists none or is absent.
+	GFXTargetVersion *int32
 	// Messages explains every nil above.
 	Messages []string
 }
@@ -153,6 +163,18 @@ func (c Collector) Collect() Reading {
 		} else {
 			r.SCLKMHz = current
 		}
+	}
+
+	if node, msg := readRenderNode(dev); node == nil {
+		r.Messages = append(r.Messages, msg)
+	} else {
+		r.DRMRenderNode = node
+	}
+
+	if target, msg := readKFDTarget(sysRoot); target == nil {
+		r.Messages = append(r.Messages, msg)
+	} else {
+		r.GFXTargetVersion = target
 	}
 
 	// PermissionFaults and QueueCreateFailures are deliberately not collected.
@@ -281,6 +303,106 @@ func discoverAMDGPU(sysRoot string) (dir string, reason string) {
 			"gpu: %d amdgpu devices found; device selection on multi-GPU nodes is pending hardware validation, so no counters were read",
 			len(candidates))
 	}
+}
+
+// readRenderNode names the DRM render node the kernel registered for the
+// device. DRM registers each minor as a child of its parent device, so the
+// device's own drm directory lists them (card0 and renderD128 on a single-GPU
+// node), and seeing that the render node exists needs no /dev mount.
+//
+// A missing drm directory is reported as unread, not as "no render node". An
+// amdgpu-bound device without one is not a layout this reader has seen, and
+// calling the node unable to run Vulkan on the strength of a layout assumption
+// would be an accusation nothing measured.
+func readRenderNode(dev string) (*string, string) {
+	entries, err := os.ReadDir(filepath.Join(dev, "drm"))
+	if err != nil {
+		return nil, fmt.Sprintf("render node: %v", err)
+	}
+	var found []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "renderD") {
+			found = append(found, e.Name())
+		}
+	}
+	switch len(found) {
+	case 0:
+		none := ""
+		return &none, ""
+	case 1:
+		return &found[0], ""
+	default:
+		return nil, fmt.Sprintf("render node: the device lists %d render nodes (%s) where one was expected",
+			len(found), strings.Join(found, ", "))
+	}
+}
+
+// readKFDTarget reads the gfx_target_version of the GPU compute agent in KFD's
+// topology. KFD lists one topology node per agent, and the CPU is one of them
+// with gfx_target_version 0; on amd-halo node 0 is the CPU and node 1 the GPU
+// at 110501 (gfx1151). Each properties file holds one "name value" pair per
+// line.
+//
+// Only an absent topology directory is a reading of zero: that is a kernel
+// with no KFD, which cannot run ROCm. Every other failure is unread. The
+// caller has already found exactly one amdgpu device, so more than one GPU
+// agent means the topology and the PCI bus disagree, and no choice is made.
+func readKFDTarget(sysRoot string) (*int32, string) {
+	dir := filepath.Join(sysRoot, "class", "kfd", "kfd", "topology", "nodes")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		zero := int32(0)
+		return &zero, ""
+	}
+	if err != nil {
+		return nil, fmt.Sprintf("kfd: %v", err)
+	}
+
+	var targets []int64
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name(), "properties"))
+		if err != nil {
+			return nil, fmt.Sprintf("kfd: %v", err)
+		}
+		v, err := kfdProperty(string(raw), "gfx_target_version")
+		if err != nil {
+			return nil, fmt.Sprintf("kfd topology node %s: %v", e.Name(), err)
+		}
+		if v > 0 {
+			targets = append(targets, v)
+		}
+	}
+
+	switch len(targets) {
+	case 0:
+		zero := int32(0)
+		return &zero, ""
+	case 1:
+		if targets[0] > math.MaxInt32 {
+			return nil, fmt.Sprintf("kfd: gfx_target_version %d is out of range", targets[0])
+		}
+		v := int32(targets[0])
+		return &v, ""
+	default:
+		return nil, fmt.Sprintf(
+			"kfd: topology lists %d GPU agents for one amdgpu device; no target was chosen", len(targets))
+	}
+}
+
+// kfdProperty finds one named property in a KFD properties file.
+func kfdProperty(properties, name string) (int64, error) {
+	for _, line := range strings.Split(properties, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != name {
+			continue
+		}
+		v, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || v < 0 {
+			return 0, fmt.Errorf("%s %q is not a non-negative decimal integer", name, fields[1])
+		}
+		return v, nil
+	}
+	return 0, fmt.Errorf("properties carry no %s", name)
 }
 
 // readSysfsInt64 reads a sysfs attribute holding one non-negative integer.

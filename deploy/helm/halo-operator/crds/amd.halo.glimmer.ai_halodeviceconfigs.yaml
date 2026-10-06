@@ -55,7 +55,7 @@ spec:
               ROCm/gpu-operator rather than reimplemented here; this operator consumes that
               one. What it owns is the layer no GPU operator models in any vendor's design:
               whether a node's kernel arguments, unified-memory sizing, firmware versions
-              and compute backend are what the fleet declared they should be.
+              and compute backends are what the fleet declared they should be.
 
               The NVIDIA analogue is not the GPU Operator — it is DGX Spark Enterprise
               Manageability, which is a different product category.
@@ -111,20 +111,42 @@ spec:
                   consumes that labelling rather than performing its own.
                 type: object
               runtimeProfile:
-                description: RuntimeProfileSpec selects the compute backend surfaced
-                  to workloads.
+                description: |-
+                  RuntimeProfileSpec declares the compute backends the targeted nodes must be
+                  able to run, and the validated runtime image for each.
+
+                  It deliberately does not choose a backend for the node. Which backend is
+                  faster flips per model and per phase (GEP-0753 pain point #4: ROCm leads
+                  prefill, Vulkan leads decode), so that choice belongs to the workload. What
+                  a node can truthfully report is whether the kernel exposes the interfaces
+                  each backend needs; a backend's userspace ships in the workload's image,
+                  not on the node.
                 properties:
-                  backend:
-                    description: Backend defaults to vulkan.
-                    enum:
-                    - vulkan
-                    - rocm
-                    type: string
-                  runtimeImages:
-                    additionalProperties:
+                  backends:
+                    description: |-
+                      Backends lists the compute backends every targeted node must be able to
+                      run. A node can run vulkan when the kernel exposes a DRM render node for
+                      its GPU, and rocm when KFD also lists that GPU as a compute agent.
+                      Defaults to every known backend.
+                    items:
+                      enum:
+                      - vulkan
+                      - rocm
                       type: string
-                    description: RuntimeImages maps a backend to its validated runtime
-                      image.
+                    type: array
+                    x-kubernetes-list-type: set
+                  enabled:
+                    description: Enabled defaults to true.
+                    type: boolean
+                  runtimeImages:
+                    description: |-
+                      RuntimeImages names the validated runtime image for each backend, as a
+                      catalogue for workloads. Nodes are not judged against it.
+                    properties:
+                      rocm:
+                        type: string
+                      vulkan:
+                        type: string
                     type: object
                 type: object
             type: object

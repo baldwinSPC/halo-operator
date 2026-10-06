@@ -90,6 +90,8 @@ func SpecFromReading(r Reading, at metav1.Time) halov1alpha1.HaloNodeObservation
 		GPUBusyPercent:      r.GPUBusyPercent,
 		SCLKMHz:             r.SCLKMHz,
 		RatedSCLKMHz:        r.RatedSCLKMHz,
+		DRMRenderNode:       r.DRMRenderNode,
+		GFXTargetVersion:    r.GFXTargetVersion,
 		Messages:            r.Messages,
 		PermissionFaults:    nil, // no validated kernel-log reader yet; see the spec comments
 		QueueCreateFailures: nil,

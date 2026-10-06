@@ -20,6 +20,7 @@ import (
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 )
 
 // fixedNow is the test clock; observations are aged relative to it.
@@ -268,6 +269,66 @@ func TestObserveHealthMapsEveryReading(t *testing.T) {
 	if h.PermissionFaults != nil || h.QueueCreateFailures != nil {
 		t.Errorf("kernel-log counters arrived as %v/%v with no reader in existence; "+
 			"a nil reading was invented into a value", h.PermissionFaults, h.QueueCreateFailures)
+	}
+}
+
+func TestObserveRuntimeMapsEveryReading(t *testing.T) {
+	o := observer(t,
+		amdNode("halo-1"), amdNode("no-kfd"), amdNode("unread"),
+		observation("halo-1", time.Minute, func(s *halov1alpha1.HaloNodeObservationSpec) {
+			s.DRMRenderNode = str("renderD128")
+			s.GFXTargetVersion = i32(110501)
+		}),
+		// Present-and-empty and present-and-zero are readings, and must not
+		// arrive as nil: they are what makes a node observed-unable rather
+		// than unread.
+		observation("no-kfd", time.Minute, func(s *halov1alpha1.HaloNodeObservationSpec) {
+			s.DRMRenderNode = str("")
+			s.GFXTargetVersion = i32(0)
+		}),
+		observation("unread", time.Minute, nil),
+	)
+
+	got, err := o.ObserveRuntime(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ObserveRuntime: %v", err)
+	}
+	byNode := map[string]runtimeprofile.Observation{}
+	for _, obs := range got {
+		byNode[obs.Node] = obs
+	}
+	if len(byNode) != 3 {
+		t.Fatalf("got %d observations, want 3", len(byNode))
+	}
+
+	if r := byNode["halo-1"]; r.RenderNode == nil || *r.RenderNode != "renderD128" ||
+		r.GFXTargetVersion == nil || *r.GFXTargetVersion != 110501 {
+		t.Errorf("readings did not survive the mapping: %+v", r)
+	}
+	if r := byNode["no-kfd"]; r.RenderNode == nil || *r.RenderNode != "" ||
+		r.GFXTargetVersion == nil || *r.GFXTargetVersion != 0 {
+		t.Errorf("observed absences collapsed into unread: %+v", r)
+	}
+	if r := byNode["unread"]; r.RenderNode != nil || r.GFXTargetVersion != nil {
+		t.Errorf("an unread node arrived with readings: %+v", r)
+	}
+}
+
+func TestObserveRuntimeTreatsAStaleObservationAsUnread(t *testing.T) {
+	o := observer(t,
+		amdNode("halo-1"),
+		observation("halo-1", time.Hour, func(s *halov1alpha1.HaloNodeObservationSpec) {
+			s.DRMRenderNode = str("renderD128")
+			s.GFXTargetVersion = i32(110501)
+		}),
+	)
+
+	got, err := o.ObserveRuntime(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ObserveRuntime: %v", err)
+	}
+	if r := got[0]; r.RenderNode != nil || r.GFXTargetVersion != nil {
+		t.Errorf("an hour-old reading is still being judged: %+v", r)
 	}
 }
 

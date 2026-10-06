@@ -91,6 +91,30 @@ type HaloNodeObservationSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	RatedSCLKMHz *int32 `json:"ratedSCLKMHz,omitempty"`
 
+	// DRMRenderNode is the DRM render node the kernel registered for the
+	// amdgpu device ("renderD128"), read from the device's drm directory in
+	// sysfs. It is the kernel interface Vulkan needs from the node, and ROCm
+	// needs it too.
+	//
+	// Present and empty is a reading: the device's drm directory was read and
+	// lists no render node, so the node cannot run either backend. Absent
+	// means it could not be read.
+	// +optional
+	DRMRenderNode *string `json:"drmRenderNode,omitempty"`
+
+	// GFXTargetVersion is the gfx_target_version of the GPU compute agent in
+	// KFD's topology (110501 is gfx1151). KFD, the kernel's /dev/kfd
+	// interface, is what ROCm needs from the node beyond the render node.
+	//
+	// Zero is a reading, not an absence. It is what KFD itself reports for an
+	// agent that is not a GPU, and it is published when the topology was read
+	// and lists no GPU agent, or when the kernel has no KFD at all. Absent
+	// means the topology could not be read, or it lists more than one GPU
+	// agent and the agent will not choose between them.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	GFXTargetVersion *int32 `json:"gfxTargetVersion,omitempty"`
+
 	// PermissionFaults counts PERMISSION_FAULT kernel-log entries in the
 	// agent's sampling window.
 	//

@@ -25,15 +25,41 @@ type MemoryPolicySpec struct {
 	MinEffectiveGPUMemoryGiB int32 `json:"minEffectiveGPUMemoryGiB,omitempty"`
 }
 
-// RuntimeProfileSpec selects the compute backend surfaced to workloads.
+// RuntimeProfileSpec declares the compute backends the targeted nodes must be
+// able to run, and the validated runtime image for each.
+//
+// It deliberately does not choose a backend for the node. Which backend is
+// faster flips per model and per phase (GEP-0753 pain point #4: ROCm leads
+// prefill, Vulkan leads decode), so that choice belongs to the workload. What
+// a node can truthfully report is whether the kernel exposes the interfaces
+// each backend needs; a backend's userspace ships in the workload's image,
+// not on the node.
 type RuntimeProfileSpec struct {
-	// Backend defaults to vulkan.
+	// Enabled defaults to true.
 	// +optional
-	// +kubebuilder:validation:Enum=vulkan;rocm
-	Backend string `json:"backend,omitempty"`
-	// RuntimeImages maps a backend to its validated runtime image.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Backends lists the compute backends every targeted node must be able to
+	// run. A node can run vulkan when the kernel exposes a DRM render node for
+	// its GPU, and rocm when KFD also lists that GPU as a compute agent.
+	// Defaults to every known backend.
 	// +optional
-	RuntimeImages map[string]string `json:"runtimeImages,omitempty"`
+	// +listType=set
+	// +kubebuilder:validation:items:Enum=vulkan;rocm
+	Backends []string `json:"backends,omitempty"`
+	// RuntimeImages names the validated runtime image for each backend, as a
+	// catalogue for workloads. Nodes are not judged against it.
+	// +optional
+	RuntimeImages RuntimeImages `json:"runtimeImages,omitempty"`
+}
+
+// RuntimeImages is the validated runtime image for each backend. It has one
+// field per backend rather than being a map, so a misspelt backend is an
+// unknown field instead of a catalogue entry no workload will ever look up.
+type RuntimeImages struct {
+	// +optional
+	Vulkan string `json:"vulkan,omitempty"`
+	// +optional
+	ROCm string `json:"rocm,omitempty"`
 }
 
 // HealthChecksSpec enables probes for the documented APU failure modes.
@@ -54,7 +80,7 @@ type HealthChecksSpec struct {
 // ROCm/gpu-operator rather than reimplemented here; this operator consumes that
 // one. What it owns is the layer no GPU operator models in any vendor's design:
 // whether a node's kernel arguments, unified-memory sizing, firmware versions
-// and compute backend are what the fleet declared they should be.
+// and compute backends are what the fleet declared they should be.
 //
 // The NVIDIA analogue is not the GPU Operator — it is DGX Spark Enterprise
 // Manageability, which is a different product category.
@@ -116,6 +142,11 @@ const ConditionMemoryPolicyCompliant = "MemoryPolicyCompliant"
 // A probe that could not read its inputs leaves this Unknown; it never counts
 // as a clean bill of health.
 const ConditionNodesHealthy = "NodesHealthy"
+
+// ConditionBackendsAvailable is True when every targeted node was observed to
+// expose the kernel interfaces each declared backend needs, False when a node
+// was observed to lack one, and Unknown when that could not be established.
+const ConditionBackendsAvailable = "BackendsAvailable"
 
 // HaloDeviceConfigStatus is the observed state of the config.
 type HaloDeviceConfigStatus struct {

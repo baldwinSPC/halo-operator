@@ -4,8 +4,8 @@ Node configuration for AMD Ryzen AI Max ("Strix Halo") Kubernetes nodes.
 
 A Kubernetes operator that keeps AMD Strix Halo / "AI Halo" nodes (Ryzen AI
 Max, gfx1151, unified memory) **configured the way a fleet declared they should
-be** — kernel arguments, unified-memory sizing, firmware versions and compute
-backend — behind a single CRD, `HaloDeviceConfig`.
+be** — kernel arguments, unified-memory sizing, firmware versions and the
+compute backends a node can run — behind a single CRD, `HaloDeviceConfig`.
 
 **It is not a GPU-stack operator, and deliberately so.** The device plugin, NFD
 detection and metrics exporter belong to AMD; gaps there are fixed in
@@ -40,7 +40,7 @@ component stanzas:
 | Stanza | What it manages |
 |---|---|
 | `memoryPolicy` | Verification only — observes kernel args and effective GTT, reports drift; **never mutates the host** (the standalone binary's `apply -execute` is the one opt-in exception, see below) |
-| `runtimeProfile` | Vulkan/ROCm backend selection surfaced as labels + validated runtime images |
+| `runtimeProfile` | Verification only — observes whether every node exposes what each declared backend needs from the kernel (a DRM render node for Vulkan; that and a KFD GPU agent for ROCm), plus a catalogue of validated runtime images per backend. It does **not** choose a backend: which one is faster flips per model and per phase, so that is the workload's choice |
 | `healthChecks` | Probes for the documented APU failure modes (clock-under-load, permission-fault, queue-create) |
 
 Upstream owns the rest. `devicePlugin`, `labeller` and `metricsExporter` were
@@ -64,9 +64,10 @@ See [config/samples/](config/samples/) for an example resource.
 Nothing in the controller touches a node. A separate **node observation
 agent** runs as a DaemonSet on every AMD GPU node (placed by the
 `feature.node.kubernetes.io/amd-gpu` label NFD applies), reads the kernel
-command line, the running values of the amdgpu and ttm module parameters, and
-the documented amdgpu sysfs counters — read-only, unprivileged, two narrow host
-mounts — and publishes what it read as a
+command line, the running values of the amdgpu and ttm module parameters, the
+documented amdgpu sysfs counters, and the GPU's DRM render node and KFD
+topology — read-only, unprivileged, two narrow host mounts — and publishes what
+it read as a
 **`HaloNodeObservation`** (cluster-scoped, named after the node, owned by the
 Node object so node deletion garbage-collects it). The controller lists the
 targeted Nodes, joins observations by name, and judges the result:
@@ -147,6 +148,16 @@ that ABI is no longer a guess:
   **no** star on any level — a starless ladder is a real format, and the parser
   reports the current clock as unread rather than inventing one.
 
+The runtime profile's two reads are not equally settled. **KFD's topology was
+read on the unit** (2026-09-14, unprivileged): node 0 is the CPU at
+`gfx_target_version` 0 and node 1 the GPU at 110501, gfx1151. **The render
+node's location is inferred, not yet read**: the agent lists the PCI device's
+own `drm` directory, which is where the kernel registers a device's DRM minors
+and where `/sys/class/drm/card0` resolves, and `/dev/dri/renderD128` is
+present on the unit, but nobody has listed that directory on it. If the layout
+differs, the reading is *not observed* and the backends `Unknown`, never
+unavailable.
+
 The collector is strict on purpose: any deviation from the documented formats
 is reported as *not observed*, never guessed at. `/agent --once` exists for
 bring-up.
@@ -171,7 +182,9 @@ The claim made here is narrow and deliberate. The agent's *reads* are
 confirmed on a physical gfx1151, and so is the *judgement*: run through the
 standalone binary (below), which shares every decision function with the
 controller, both `memory-policy` and `health-checks` reach `Ready` against the
-physical unit for a policy matching what the platform configures. What has not
+physical unit for a policy matching what the platform configures
+(`runtime-profile` is newer than that run and has not yet been judged against
+the unit). What has not
 happened yet is a condition reaching `True` on a node **under Kubernetes
 management** — which is what issues #4/#5 ask for, so they remain open until
 the node joins a cluster.

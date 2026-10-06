@@ -5,7 +5,8 @@
 // the decision packages consume. It is the controller-side half of the node
 // agent: the agent writes what it read, this package decides which of those
 // writings still count as knowledge — and nothing more. All policy about what
-// readings MEAN stays in internal/memorypolicy and internal/healthchecks.
+// readings MEAN stays in internal/memorypolicy, internal/healthchecks and
+// internal/runtimeprofile.
 //
 // The join is deliberately node-first: the set of nodes the policy targets
 // comes from listing Nodes by selector, and observations are matched to that
@@ -29,6 +30,7 @@ import (
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 )
 
 // NodeFeatureLabelAMDGPU is the label Node Feature Discovery applies to nodes
@@ -45,7 +47,7 @@ const DefaultMaxAge = 5 * time.Minute
 
 // Observer reads Nodes and HaloNodeObservations from the cluster and produces
 // per-node observations for the reconciler. It implements the reconciler's
-// NodeObserver and HealthObserver interfaces.
+// NodeObserver, HealthObserver and RuntimeObserver interfaces.
 type Observer struct {
 	// Reader is the cluster to read from, usually the manager's cached client.
 	Reader client.Reader
@@ -129,6 +131,36 @@ func HealthObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) 
 	obs.RatedSCLKMHz = copyInt32(spec.RatedSCLKMHz)
 	obs.PermissionFaults = copyInt32(spec.PermissionFaults)
 	obs.QueueCreateFailures = copyInt32(spec.QueueCreateFailures)
+	return obs
+}
+
+// ObserveRuntime returns one runtime-profile observation per targeted node.
+func (o *Observer) ObserveRuntime(ctx context.Context, selector map[string]string) ([]runtimeprofile.Observation, error) {
+	nodes, readings, err := o.join(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]runtimeprofile.Observation, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, RuntimeObservation(node, readings[node]))
+	}
+	return out, nil
+}
+
+// RuntimeObservation translates one node's published spec into what the
+// runtime profile judges. A nil spec yields both readings nil, which reports
+// every backend as not observed, never as available. Shared with the
+// standalone binary for the same reason as MemoryObservation.
+func RuntimeObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) runtimeprofile.Observation {
+	obs := runtimeprofile.Observation{Node: node}
+	if spec == nil {
+		return obs
+	}
+	if spec.DRMRenderNode != nil {
+		v := *spec.DRMRenderNode
+		obs.RenderNode = &v
+	}
+	obs.GFXTargetVersion = copyInt32(spec.GFXTargetVersion)
 	return obs
 }
 

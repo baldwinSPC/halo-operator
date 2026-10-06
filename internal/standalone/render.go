@@ -15,6 +15,7 @@ import (
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 )
 
 // memoryParams are the module parameters that govern unified memory on this
@@ -88,6 +89,8 @@ func RenderInspect(w io.Writer, node string, spec halov1alpha1.HaloNodeObservati
 	default:
 		fmt.Fprintln(tw, "  shader clock\tnot observed")
 	}
+	fmt.Fprintf(tw, "  render node\t%s\n", renderNodeOrAbsent(spec.DRMRenderNode))
+	fmt.Fprintf(tw, "  KFD agent\t%s\n", kfdTargetOrAbsent(spec.GFXTargetVersion))
 	tw.Flush()
 
 	fmt.Fprintln(w)
@@ -133,6 +136,9 @@ func RenderCheck(w io.Writer, r Report, policyPath string) {
 		}
 		for _, p := range c.Probes {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(probeResult(p.Result)), p.Probe, p.Message)
+		}
+		for _, b := range c.Backends {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(backendResult(b.Result)), b.Backend, b.Message)
 		}
 		for _, im := range c.Images {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(im.Result), im.Image, im.Detail)
@@ -225,6 +231,41 @@ func probeResult(r string) string {
 		return LineDrift
 	default:
 		return LineUnobserved
+	}
+}
+
+func backendResult(r string) string {
+	switch r {
+	case string(runtimeprofile.ResultAvailable):
+		return LineOK
+	case string(runtimeprofile.ResultUnavailable):
+		return LineDrift
+	default:
+		return LineUnobserved
+	}
+}
+
+// renderNodeOrAbsent keeps "read, and there is none" apart from "not read".
+func renderNodeOrAbsent(p *string) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == "":
+		return "none registered"
+	default:
+		return *p
+	}
+}
+
+// kfdTargetOrAbsent keeps "KFD lists no GPU agent" apart from "not read".
+func kfdTargetOrAbsent(p *int32) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == 0:
+		return "no GPU agent (or no KFD)"
+	default:
+		return fmt.Sprintf("%s (gfx_target_version %d)", runtimeprofile.GFXName(*p), *p)
 	}
 }
 
