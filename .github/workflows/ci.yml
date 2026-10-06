@@ -14,6 +14,11 @@ jobs:
     # naming a container is mandatory, not stylistic — a job without one is
     # rejected by the runner.
     runs-on: glimmer-arm64-halo-operator
+    # Measured over the 37 most recent completed runs (2026-10-06): median 2.0
+    # min, p90 4.1, p99 and max 10.4. About twice the slowest. Glimmer's runner
+    # install refuses a job deadline shorter than any job's timeout (glimmer
+    # #3790), and a job with none counts as GitHub's 360.
+    timeout-minutes: 20
     # Built by .github/workflows/runner-image.yml. It carries Go, helm, make
     # and gcc, none of which the stock actions-runner image has.
     #
