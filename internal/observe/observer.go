@@ -25,6 +25,7 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -325,6 +326,20 @@ func MemoryPolicy(spec halov1alpha1.MemoryPolicySpec) memorypolicy.Policy {
 		ExpectedKernelArgs:       spec.ExpectedKernelArgs,
 		MinEffectiveGPUMemoryGiB: spec.MinEffectiveGPUMemoryGiB,
 	}
+}
+
+// ObservedAt returns, for each targeted node with a fresh observation, when it
+// was taken. A node without one is absent from the map.
+func (o *Observer) ObservedAt(ctx context.Context, selector map[string]string) (map[string]metav1.Time, error) {
+	_, readings, err := o.join(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]metav1.Time, len(readings))
+	for node, spec := range readings {
+		out[node] = spec.ObservedAt
+	}
+	return out, nil
 }
 
 // join lists the targeted nodes and the fresh observation, if any, for each.

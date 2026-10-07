@@ -239,6 +239,41 @@ type HaloDeviceConfigStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// +optional
 	Components []ComponentStatus `json:"components,omitempty"`
+	// Nodes is the verdict per targeted node, so a reader can name which
+	// nodes drifted and which went unread without reading agent logs; the
+	// conditions above only count them. Nodes with any component not Ready
+	// come first, then the rest, each group by name. At most MaxNodeStatuses
+	// are listed.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=256
+	Nodes []NodeStatus `json:"nodes,omitempty"`
+	// NodesOmitted counts targeted nodes left out of Nodes by its bound. Zero
+	// when every targeted node is listed.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	NodesOmitted int32 `json:"nodesOmitted,omitempty"`
+}
+
+// MaxNodeStatuses bounds status.nodes, keeping a large fleet's status well
+// under the API server's object size limit.
+const MaxNodeStatuses = 256
+
+// NodeStatus is one targeted node's state per enabled component.
+type NodeStatus struct {
+	// Name is the node's name.
+	Name string `json:"name"`
+	// ObservedAt is when the agent took the reading these states rest on.
+	// Absent when the node has no fresh observation, which is also why every
+	// component then reads NotObserved.
+	// +optional
+	ObservedAt *metav1.Time `json:"observedAt,omitempty"`
+	// Components is this node's state for each enabled component, in the
+	// same vocabulary as the config-wide list.
+	// +listType=map
+	// +listMapKey=name
+	Components []ComponentStatus `json:"components"`
 }
 
 // +kubebuilder:object:root=true

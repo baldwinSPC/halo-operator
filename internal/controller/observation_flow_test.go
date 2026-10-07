@@ -178,6 +178,9 @@ func TestObservedCompliantNodeReachesTrue(t *testing.T) {
 	if backends == nil || backends.Status != metav1.ConditionTrue {
 		t.Fatalf("BackendsAvailable = %+v, want True for a node with a render node and a KFD GPU agent", backends)
 	}
+	if len(got.Status.Nodes) != 1 || got.Status.Nodes[0].ObservedAt == nil {
+		t.Errorf("status.nodes = %+v, want the node with the time its observation was taken", got.Status.Nodes)
+	}
 	component := componentOf(got, componentMemoryPolicy)
 	if component == nil || component.State != halov1alpha1.ComponentReady {
 		t.Errorf("memory-policy component = %+v, want Ready", component)

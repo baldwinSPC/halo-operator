@@ -341,6 +341,10 @@ func TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy(t *testing.T) 
 			t.Errorf("%s = %v, want True", conditionType, c)
 		}
 	}
+	// The per-node list reaches the stored status through the CRD schema.
+	if len(got.Status.Nodes) != 1 || got.Status.Nodes[0].Name != "halo-1" || len(got.Status.Nodes[0].Components) != 5 {
+		t.Errorf("status.nodes = %+v, want halo-1 with all five components", got.Status.Nodes)
+	}
 	for _, name := range []string{componentMemoryPolicy, componentRuntimeProfile, componentHealthChecks,
 		componentStackPolicy, componentBootHold} {
 		component := componentOf(got, name)

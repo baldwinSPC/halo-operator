@@ -128,6 +128,7 @@ func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	cfg.Status.ObservedGeneration = cfg.Generation
 	cfg.Status.Components = []halov1alpha1.ComponentStatus{
 		memoryStatus, runtimeStatus, healthStatus, stackStatus, bootHoldStatus}
+	cfg.Status.Nodes, cfg.Status.NodesOmitted = r.nodeStatuses(ctx, spec, now)
 	meta.SetStatusCondition(&cfg.Status.Conditions, memoryCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions, runtimeCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions, healthCondition)
