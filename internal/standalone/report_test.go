@@ -30,6 +30,25 @@ func amdHaloSpec() halov1alpha1.HaloNodeObservationSpec {
 		RatedSCLKMHz:     ptr(int32(2900)),
 		DRMRenderNode:    ptr("renderD128"),
 		GFXTargetVersion: ptr(int32(110501)),
+		// Read 2026-10-06: the inbox amdgpu (no taint), the kernel's own TTM,
+		// and the unit's firmware.
+		AMDGPUTaint:  ptr(""),
+		TTMModule:    ptr("ttm"),
+		VBIOSVersion: ptr("113-STRXLGEN-001"),
+		FirmwareVersions: map[string]string{
+			"asd":     "0x21000110",
+			"dmcub":   "0x09004700",
+			"imu":     "0x0b352300",
+			"mec":     "0x00000023",
+			"me":      "0x00000020",
+			"mes":     "0x00000088",
+			"mes_kiq": "0x0000006f",
+			"pfp":     "0x00000032",
+			"rlc":     "0x11530506",
+			"sdma":    "0x00000012",
+			"smc":     "0x0a640900",
+			"vcn":     "0x09118022",
+		},
 	}
 }
 
@@ -121,6 +140,7 @@ func TestExitCodesCarryTheThreeValuedAnswer(t *testing.T) {
 				MemoryPolicy:   halov1alpha1.MemoryPolicySpec{Enabled: ptr(false)},
 				RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Enabled: ptr(false)},
 				HealthChecks:   halov1alpha1.HealthChecksSpec{Enabled: ptr(false)},
+				StackPolicy:    halov1alpha1.StackPolicySpec{Enabled: ptr(false)},
 			},
 			OutcomeNotObserved, ExitNotObserved,
 		},

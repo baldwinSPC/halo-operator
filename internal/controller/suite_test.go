@@ -21,9 +21,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
+	"github.com/baldwinSPC/halo-operator/internal/boothold"
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
 	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
+	"github.com/baldwinSPC/halo-operator/internal/stackpolicy"
 )
 
 // testEnv is the shared control plane. It is package-level because starting a
@@ -175,6 +177,25 @@ func TestCRDRejectsAnUnknownBackend(t *testing.T) {
 	}
 }
 
+// TestCRDRejectsAMalformedKernelFloor proves the stack policy's pattern
+// reached the CRD: a floor the comparison cannot parse would otherwise be
+// stored and then make every node's kernel check unobservable.
+func TestCRDRejectsAMalformedKernelFloor(t *testing.T) {
+	requireEnvtest(t)
+
+	cfg := &halov1alpha1.HaloDeviceConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "bad-kernel-floor"},
+		Spec: halov1alpha1.HaloDeviceConfigSpec{
+			StackPolicy: halov1alpha1.StackPolicySpec{MinKernelVersion: "6.18.4-rc1"},
+		},
+	}
+	err := k8sClient.Create(context.Background(), cfg)
+	if err == nil {
+		_ = k8sClient.Delete(context.Background(), cfg)
+		t.Fatal("the API server accepted a malformed kernel floor; the pattern marker is not in the CRD")
+	}
+}
+
 // TestCRDRejectsANegativeMemoryFloor proves the Minimum marker reached the CRD.
 func TestCRDRejectsANegativeMemoryFloor(t *testing.T) {
 	requireEnvtest(t)
@@ -292,6 +313,9 @@ func TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy(t *testing.T) 
 			KernelParams: map[string]string{"amd_iommu": "off"},
 		}}},
 		RuntimeObserver: stubRuntimeObserver{observations: []runtimeprofile.Observation{bothBackends("halo-1")}},
+		StackObserver:   stubStackObserver{observations: []stackpolicy.Observation{inboxStack("halo-1")}},
+		BootHoldObserver: stubBootHold{results: []boothold.NodeResult{{
+			Node: "halo-1", Result: boothold.Result{Verdict: boothold.Cleared, Reason: "Cleared"}}}},
 		HealthObserver: stubHealthObserver{observations: []healthchecks.Observation{{
 			Node:                "halo-1",
 			GPUBusyPercent:      i32(99),
@@ -307,6 +331,9 @@ func TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy(t *testing.T) 
 		halov1alpha1.ConditionMemoryPolicyCompliant,
 		halov1alpha1.ConditionBackendsAvailable,
 		halov1alpha1.ConditionNodesHealthy,
+		halov1alpha1.ConditionStackCompliant,
+		halov1alpha1.ConditionGPUFirmwareCompliant,
+		halov1alpha1.ConditionBootHoldCleared,
 		halov1alpha1.ConditionReady,
 	} {
 		c := conditionOf(got, conditionType)
@@ -314,7 +341,8 @@ func TestReconcileReportsReadyOnlyWhenEverythingObservedIsHealthy(t *testing.T) 
 			t.Errorf("%s = %v, want True", conditionType, c)
 		}
 	}
-	for _, name := range []string{componentMemoryPolicy, componentRuntimeProfile, componentHealthChecks} {
+	for _, name := range []string{componentMemoryPolicy, componentRuntimeProfile, componentHealthChecks,
+		componentStackPolicy, componentBootHold} {
 		component := componentOf(got, name)
 		if component == nil || component.State != halov1alpha1.ComponentReady {
 			t.Errorf("%s component = %v, want Ready", name, component)

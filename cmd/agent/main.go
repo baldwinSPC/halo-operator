@@ -34,13 +34,17 @@ func init() {
 }
 
 func main() {
-	var nodeName, procRoot, sysRoot string
+	var nodeName, procRoot, sysRoot, etcRoot, espRoot string
 	var interval time.Duration
 	var once bool
 	flag.StringVar(&nodeName, "node-name", os.Getenv("NODE_NAME"),
 		"Name of the node this agent runs on. Defaults to $NODE_NAME, which the DaemonSet sets from the downward API.")
 	flag.StringVar(&procRoot, "proc-root", "/proc",
 		"Where the host's /proc is visible. Only <proc-root>/cmdline is read.")
+	flag.StringVar(&etcRoot, "etc-root", "/etc",
+		"where the host's /etc is visible; only <etc-root>/kernel/cmdline is read")
+	flag.StringVar(&espRoot, "esp-root", "/efi",
+		"where the host's EFI system partition is visible, mounted read-only; only <esp-root>/loader/entries is listed")
 	flag.StringVar(&sysRoot, "sys-root", "/sys",
 		"Where the host's /sys is visible.")
 	flag.DurationVar(&interval, "interval", time.Minute,
@@ -67,11 +71,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	collector := nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot}
+	collector := nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot, EtcRoot: etcRoot, ESPRoot: espRoot}
 	publisher := nodeagent.Publisher{Client: c, NodeName: nodeName}
 	ctx := ctrl.SetupSignalHandler()
 
-	log.Info("starting", "node", nodeName, "interval", interval, "procRoot", procRoot, "sysRoot", sysRoot)
+	log.Info("starting", "node", nodeName, "interval", interval, "procRoot", procRoot, "sysRoot", sysRoot, "etcRoot", etcRoot, "espRoot", espRoot)
 
 	if once {
 		if err := cycle(ctx, log, collector, publisher); err != nil {

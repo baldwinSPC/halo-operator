@@ -17,6 +17,8 @@ func (s HaloDeviceConfigSpec) WithDefaults() HaloDeviceConfigSpec {
 	out.MemoryPolicy.Enabled = defaultTrue(out.MemoryPolicy.Enabled)
 	out.RuntimeProfile.Enabled = defaultTrue(out.RuntimeProfile.Enabled)
 	out.HealthChecks.Enabled = defaultTrue(out.HealthChecks.Enabled)
+	out.StackPolicy.Enabled = defaultTrue(out.StackPolicy.Enabled)
+	out.StackPolicy.RequireInboxDriver = defaultTrue(out.StackPolicy.RequireInboxDriver)
 	if len(out.RuntimeProfile.Backends) == 0 {
 		out.RuntimeProfile.Backends = append([]string(nil), KnownBackends...)
 	}

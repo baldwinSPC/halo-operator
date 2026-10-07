@@ -93,6 +93,14 @@ agent:
   # Kubernetes 1.30 or newer; an older API server refuses the install by
   # naming the missing ValidatingAdmissionPolicy kind — set this to false there.
   pinObservationNames: true
+  # -- Read the persisted boot configuration (/etc/kernel/cmdline and the boot
+  # loader entries on the EFI system partition), so BootHoldCleared can be
+  # decided. The entries are mode 0700, root-only, so this runs the agent as
+  # uid 0. Every capability stays dropped, the root filesystem stays read-only,
+  # privilege escalation stays off, and both new mounts are read-only. Off by
+  # default: BootHoldCleared then stays Unknown, which is the honest answer
+  # for an unread file. The two mounts must exist on every targeted node.
+  readBootEntries: false
   # -- Nodes to observe. The default is the label Node Feature Discovery
   # applies to AMD GPU nodes via the rule AMD's GPU Operator installs, which
   # is also what an empty HaloDeviceConfig nodeSelector targets.

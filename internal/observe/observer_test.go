@@ -402,3 +402,40 @@ func TestGiBFloor(t *testing.T) {
 		})
 	}
 }
+
+func TestStackObservationFoldsTheVBIOSIntoFirmware(t *testing.T) {
+	obs := StackObservation("n", &halov1alpha1.HaloNodeObservationSpec{
+		AMDGPUTaint:      str(""),
+		TTMModule:        str("ttm"),
+		FirmwareVersions: map[string]string{"mes": "0x00000088"},
+		VBIOSVersion:     str("113-STRXLGEN-001"),
+	})
+	if obs.Firmware["mes"] != "0x00000088" || obs.Firmware["vbios"] != "113-STRXLGEN-001" {
+		t.Errorf("Firmware = %v, want mes and vbios", obs.Firmware)
+	}
+	if obs.AMDGPUTaint == nil || *obs.AMDGPUTaint != "" {
+		t.Errorf("an empty taint did not survive as a reading: %v", obs.AMDGPUTaint)
+	}
+	if empty := StackObservation("n", &halov1alpha1.HaloNodeObservationSpec{}); empty.Firmware != nil {
+		t.Errorf("no firmware readings produced a non-nil map %v; unread must stay nil", empty.Firmware)
+	}
+}
+
+// On a DKMS host GTT is sized by amdttm.pages_limit; a policy written as
+// ttm.pages_limit must read it rather than report not observed forever.
+func TestMemoryObservationReadsTheLoadedTTM(t *testing.T) {
+	obs := MemoryObservation("n", &halov1alpha1.HaloNodeObservationSpec{
+		ModuleParams: map[string]string{"amdttm.pages_limit": "24692260"},
+		TTMModule:    str("amdttm"),
+	})
+	if got := obs.ModuleParams["ttm.pages_limit"]; got != "24692260" {
+		t.Errorf("ttm.pages_limit = %q, want amdttm's value", got)
+	}
+	inbox := MemoryObservation("n", &halov1alpha1.HaloNodeObservationSpec{
+		ModuleParams: map[string]string{"ttm.pages_limit": "1", "amdttm.pages_limit": "2"},
+		TTMModule:    str("ttm"),
+	})
+	if got := inbox.ModuleParams["ttm.pages_limit"]; got != "1" {
+		t.Errorf("with the kernel's ttm loaded, ttm.pages_limit = %q, want its own value", got)
+	}
+}

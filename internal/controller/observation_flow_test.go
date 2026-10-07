@@ -85,6 +85,11 @@ func haloNodeFixture(t *testing.T) nodeagent.Collector {
 	kfd := filepath.Join(sysRoot, "class", "kfd", "kfd", "topology", "nodes")
 	write(filepath.Join(kfd, "0", "properties"), "cpu_cores_count 32\nsimd_count 0\ngfx_target_version 0\n")
 	write(filepath.Join(kfd, "1", "properties"), "cpu_cores_count 0\nsimd_count 80\ngfx_target_version 110501\n")
+	write(filepath.Join(sysRoot, "module", "amdgpu", "taint"), "\n")
+	write(filepath.Join(sysRoot, "module", "ttm", "parameters", "pages_limit"), "32505856\n")
+	write(filepath.Join(dev, "vbios_version"), "113-STRXLGEN-001\n")
+	write(filepath.Join(dev, "fw_version", "mes_fw_version"), "0x00000088\n")
+	write(filepath.Join(dev, "fw_version", "smc_fw_version"), "0x0a640900\n")
 	driver := filepath.Join(sysRoot, "bus", "pci", "drivers", "amdgpu")
 	if err := os.MkdirAll(driver, 0o755); err != nil {
 		t.Fatal(err)
@@ -92,7 +97,16 @@ func haloNodeFixture(t *testing.T) nodeagent.Collector {
 	if err := os.Symlink(driver, filepath.Join(dev, "driver")); err != nil {
 		t.Fatal(err)
 	}
-	return nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot}
+	// The boot-hold sources are part of a readable node now. Without them this
+	// fixture reads the HOST's /etc and /efi, which is a fixture sampling the
+	// machine — green on a box that happens to have neither, red on one that
+	// has one of them.
+	etcRoot := filepath.Join(filepath.Dir(procRoot), "etc")
+	espRoot := filepath.Join(filepath.Dir(procRoot), "efi")
+	write(filepath.Join(etcRoot, "kernel", "cmdline"), "root=/dev/nvme0n1p2 quiet\n")
+	write(filepath.Join(espRoot, "loader", "entries", "fixture.conf"),
+		"title Fixture\noptions     root=/dev/nvme0n1p2 quiet\n")
+	return nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot, EtcRoot: etcRoot, ESPRoot: espRoot}
 }
 
 // createAMDNode registers a Node carrying the NFD label the default selector
@@ -130,10 +144,12 @@ func collectAndPublish(t *testing.T, collector nodeagent.Collector, node string,
 func observingReconciler() *HaloDeviceConfigReconciler {
 	observer := &observe.Observer{Reader: k8sClient}
 	return &HaloDeviceConfigReconciler{
-		Client:          k8sClient,
-		MemoryObserver:  observer,
-		RuntimeObserver: observer,
-		HealthObserver:  observer,
+		Client:           k8sClient,
+		MemoryObserver:   observer,
+		RuntimeObserver:  observer,
+		HealthObserver:   observer,
+		StackObserver:    observer,
+		BootHoldObserver: observer,
 	}
 }
 

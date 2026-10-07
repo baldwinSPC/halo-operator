@@ -85,6 +85,7 @@ func SpecFromReading(r Reading, at metav1.Time) halov1alpha1.HaloNodeObservation
 		ObservedAt:          at,
 		KernelCmdline:       r.KernelCmdline,
 		KernelRelease:       r.KernelRelease,
+		BootHold:            bootHoldSpec(r.BootHold),
 		ModuleParams:        r.ModuleParams,
 		GTTTotalBytes:       r.GTTTotalBytes,
 		GPUBusyPercent:      r.GPUBusyPercent,
@@ -92,8 +93,33 @@ func SpecFromReading(r Reading, at metav1.Time) halov1alpha1.HaloNodeObservation
 		RatedSCLKMHz:        r.RatedSCLKMHz,
 		DRMRenderNode:       r.DRMRenderNode,
 		GFXTargetVersion:    r.GFXTargetVersion,
+		AMDGPUTaint:         r.AMDGPUTaint,
+		TTMModule:           r.TTMModule,
+		FirmwareVersions:    r.FirmwareVersions,
+		VBIOSVersion:        r.VBIOSVersion,
 		Messages:            r.Messages,
 		PermissionFaults:    nil, // no validated kernel-log reader yet; see the spec comments
 		QueueCreateFailures: nil,
 	}
+}
+
+// bootHoldSpec lifts the collector's boot-hold reading into the API type.
+//
+// A nil reading stays nil: the field is absent when the agent did not look,
+// which is not the same as looking and finding nothing.
+func bootHoldSpec(r *BootHoldReading) *halov1alpha1.BootHoldReading {
+	if r == nil {
+		return nil
+	}
+	out := &halov1alpha1.BootHoldReading{
+		EtcKernelCmdline:    r.EtcKernelCmdline,
+		LoaderEntriesListed: r.LoaderEntriesListed,
+		LoaderEntriesFound:  r.LoaderEntriesFound,
+		Unreadable:          r.Unreadable,
+	}
+	for _, e := range r.LoaderEntries {
+		out.LoaderEntries = append(out.LoaderEntries,
+			halov1alpha1.LoaderEntryReading{Path: e.Path, Options: e.Options})
+	}
+	return out
 }

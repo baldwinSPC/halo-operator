@@ -27,6 +27,8 @@ const (
 	componentMemoryPolicy   = "memory-policy"
 	componentRuntimeProfile = "runtime-profile"
 	componentHealthChecks   = "health-checks"
+	componentStackPolicy    = "stack-policy"
+	componentBootHold       = "boot-hold"
 )
 
 // HaloDeviceConfigReconciler reconciles a HaloDeviceConfig.
@@ -37,6 +39,15 @@ type HaloDeviceConfigReconciler struct {
 	// nil observer means no source is wired up, which is reported as
 	// NotObserved rather than quietly treated as compliance.
 	MemoryObserver NodeObserver
+
+	// BootHoldObserver reads the persisted boot configuration of the targeted
+	// nodes. Nil means no source is wired up, reported as NotObserved rather
+	// than quietly treated as a cleared hold.
+	BootHoldObserver BootHoldObserver
+
+	// StackObserver reads the driver, kernel and GPU firmware of the targeted
+	// nodes. A nil observer is reported as NotObserved.
+	StackObserver StackObserver
 
 	// HealthObserver reads the health signals of the targeted nodes. A nil
 	// observer is reported as NotObserved, never as a clean bill of health.
@@ -111,12 +122,18 @@ func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	memoryStatus, memoryCondition := evaluateMemoryPolicy(ctx, r.MemoryObserver, &cfg, spec, now)
 	runtimeStatus, runtimeCondition := evaluateRuntimeProfile(ctx, r.RuntimeObserver, &cfg, spec, now)
 	healthStatus, healthCondition := evaluateHealthChecks(ctx, r.HealthObserver, &cfg, spec, now)
+	stackStatus, stackCondition, firmwareCondition := evaluateStackPolicy(ctx, r.StackObserver, &cfg, spec, now)
+	bootHoldStatus, bootHoldCondition := evaluateBootHold(ctx, r.BootHoldObserver, &cfg, spec, now)
 
 	cfg.Status.ObservedGeneration = cfg.Generation
-	cfg.Status.Components = []halov1alpha1.ComponentStatus{memoryStatus, runtimeStatus, healthStatus}
+	cfg.Status.Components = []halov1alpha1.ComponentStatus{
+		memoryStatus, runtimeStatus, healthStatus, stackStatus, bootHoldStatus}
 	meta.SetStatusCondition(&cfg.Status.Conditions, memoryCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions, runtimeCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions, healthCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, stackCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, firmwareCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, bootHoldCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions,
 		readyCondition(cfg.Status.Components, cfg.Generation))
 

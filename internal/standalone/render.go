@@ -91,6 +91,23 @@ func RenderInspect(w io.Writer, node string, spec halov1alpha1.HaloNodeObservati
 	}
 	fmt.Fprintf(tw, "  render node\t%s\n", renderNodeOrAbsent(spec.DRMRenderNode))
 	fmt.Fprintf(tw, "  KFD agent\t%s\n", kfdTargetOrAbsent(spec.GFXTargetVersion))
+	fmt.Fprintf(tw, "  amdgpu taint\t%s\n", taintOrAbsent(spec.AMDGPUTaint))
+	fmt.Fprintf(tw, "  TTM module\t%s\n", stringOrAbsent(spec.TTMModule, "none loaded"))
+	fmt.Fprintf(tw, "  VBIOS\t%s\n", stringOrAbsent(spec.VBIOSVersion, "(empty)"))
+	if spec.FirmwareVersions == nil {
+		fmt.Fprintln(tw, "  firmware\tnot observed")
+	} else {
+		names := make([]string, 0, len(spec.FirmwareVersions))
+		for k := range spec.FirmwareVersions {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		parts := make([]string, 0, len(names))
+		for _, k := range names {
+			parts = append(parts, k+"="+spec.FirmwareVersions[k])
+		}
+		fmt.Fprintf(tw, "  firmware\t%s\n", strings.Join(parts, " "))
+	}
 	tw.Flush()
 
 	fmt.Fprintln(w)
@@ -139,6 +156,9 @@ func RenderCheck(w io.Writer, r Report, policyPath string) {
 		}
 		for _, b := range c.Backends {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(backendResult(b.Result)), b.Backend, b.Message)
+		}
+		for _, ch := range c.Checks {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(ch.Result), ch.Check, ch.Message)
 		}
 		for _, im := range c.Images {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(im.Result), im.Image, im.Detail)
@@ -266,6 +286,29 @@ func kfdTargetOrAbsent(p *int32) string {
 		return "no GPU agent (or no KFD)"
 	default:
 		return fmt.Sprintf("%s (gfx_target_version %d)", runtimeprofile.GFXName(*p), *p)
+	}
+}
+
+// taintOrAbsent keeps "read, no flags" (the inbox driver) apart from "not read".
+func taintOrAbsent(p *string) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == "":
+		return "none (in-tree module)"
+	default:
+		return *p
+	}
+}
+
+func stringOrAbsent(p *string, empty string) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == "":
+		return empty
+	default:
+		return *p
 	}
 }
 

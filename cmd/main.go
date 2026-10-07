@@ -58,15 +58,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// One observer serves all three interfaces: the memory policy, the
-	// runtime profile and the health checks read the same published
+	// One observer serves every interface: the memory policy, the runtime
+	// profile, the health checks and the boot hold read the same published
 	// observations, differently.
 	observer := &observe.Observer{Reader: mgr.GetClient(), MaxAge: maxObservationAge}
 	if err := (&controller.HaloDeviceConfigReconciler{
-		Client:          mgr.GetClient(),
-		MemoryObserver:  observer,
-		RuntimeObserver: observer,
-		HealthObserver:  observer,
+		Client:           mgr.GetClient(),
+		MemoryObserver:   observer,
+		RuntimeObserver:  observer,
+		HealthObserver:   observer,
+		BootHoldObserver: observer,
+		StackObserver:    observer,
 		// Recheck at half the freshness window so an observation can never
 		// expire more than half a window before anyone notices.
 		RecheckPeriod: maxObservationAge / 2,

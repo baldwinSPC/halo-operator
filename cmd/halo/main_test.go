@@ -84,6 +84,9 @@ func nodeFixture(t *testing.T) (string, string) {
 	must(dev+"gpu_busy_percent", "0\n")
 	must(dev+"pp_dpm_sclk", "0: 600Mhz *\n1: 1100Mhz \n2: 2900Mhz \n")
 	must(dev+"drm/renderD128/dev", "226:128\n")
+	must(dev+"vbios_version", "113-STRXLGEN-001\n")
+	must(dev+"fw_version/mes_fw_version", "0x00000088\n")
+	must("sys/module/amdgpu/taint", "\n")
 	must("sys/class/kfd/kfd/topology/nodes/0/properties", "cpu_cores_count 32\nsimd_count 0\ngfx_target_version 0\n")
 	must("sys/class/kfd/kfd/topology/nodes/1/properties", "cpu_cores_count 0\nsimd_count 80\ngfx_target_version 110501\n")
 	if err := os.MkdirAll(filepath.Join(root, "sys/bus/pci/drivers/amdgpu"), 0o755); err != nil {

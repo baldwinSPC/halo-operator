@@ -149,6 +149,67 @@ spec:
                         type: string
                     type: object
                 type: object
+              stackPolicy:
+                description: |-
+                  StackPolicySpec declares the software stack under ROCm and Vulkan that the
+                  targeted nodes must run: which amdgpu driver, how old a kernel, and which
+                  GPU firmware versions are known to be bad. The operator verifies and
+                  reports; installing or upgrading any of it is the Glimmer host path.
+                properties:
+                  enabled:
+                    description: Enabled defaults to true.
+                    type: boolean
+                  knownBadFirmware:
+                    description: |-
+                      KnownBadFirmware flags firmware versions known to break this hardware.
+                      The operator never installs firmware; it reports a node running one of
+                      these.
+                    items:
+                      description: KnownBadFirmware is one firmware version to flag.
+                      properties:
+                        component:
+                          description: |-
+                            Component names the GPU firmware: an entry of the GPU's fw_version
+                            directory in sysfs ("mes", "smc", "rlc", ...) or "vbios". On an APU
+                            these arrive with the distribution's firmware package, not a flash.
+                            The system BIOS is not here: its pin and compliance belong to the
+                            firmware stanza (halo-operator#36) and its flash to Glimmer's rollout.
+                          minLength: 1
+                          type: string
+                        reason:
+                          description: |-
+                            Reason says why it is bad, ideally with a link; it is quoted in the
+                            condition that reports it.
+                          type: string
+                        version:
+                          description: Version is the version exactly as sysfs prints
+                            it ("0x00000088").
+                          minLength: 1
+                          type: string
+                      required:
+                      - component
+                      - version
+                      type: object
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  minKernelVersion:
+                    description: |-
+                      MinKernelVersion is the oldest kernel accepted, as a dotted version
+                      compared against the leading version of the running kernel's release
+                      ("6.18.4" accepts "6.18.44+rex+5-amd64"). Empty means no floor. There
+                      is no default because AMD's own floors disagree by distribution: its
+                      RDNA3.5 page names Ubuntu 24.04 HWE 6.17.0-19, OEM 6.14.0-1018, and
+                      6.18.4 otherwise.
+                    pattern: ^$|^[0-9]+\.[0-9]+(\.[0-9]+)?$
+                    type: string
+                  requireInboxDriver:
+                    description: |-
+                      RequireInboxDriver requires the kernel's own amdgpu, not the out-of-tree
+                      amdgpu-dkms. Defaults to true. AMD's guidance for gfx1151 APUs is the
+                      inbox driver; it closed ROCm#6186 (PERMISSION_FAULT storms) and
+                      ROCm#6118 (queue-create faults) as caused by amdgpu-dkms.
+                    type: boolean
+                type: object
             type: object
           status:
             description: HaloDeviceConfigStatus is the observed state of the config.

@@ -19,6 +19,8 @@ type fixture struct {
 	t        *testing.T
 	procRoot string
 	sysRoot  string
+	etcRoot  string
+	espRoot  string
 }
 
 const fixtureCmdline = "BOOT_IMAGE=/vmlinuz root=/dev/nvme0n1p2 amd_iommu=off amdgpu.gttsize=126976 ttm.pages_limit=32505856 quiet\n"
@@ -35,9 +37,17 @@ func newFixture(t *testing.T) *fixture {
 		t:        t,
 		procRoot: filepath.Join(root, "proc"),
 		sysRoot:  filepath.Join(root, "sys"),
+		etcRoot:  filepath.Join(root, "etc"),
+		espRoot:  filepath.Join(root, "efi"),
 	}
 	f.writeFile(filepath.Join(f.procRoot, "cmdline"), fixtureCmdline)
 	f.writeFile(filepath.Join(f.procRoot, "sys", "kernel", "osrelease"), fixtureRelease+"\n")
+	// A healthy node is readable in EVERY source the collector reads, and the
+	// boot-hold sources are two of them now. Leaving them out would make this
+	// fixture sample the HOST's /etc and /efi, which is how it first broke.
+	f.writeFile(filepath.Join(f.etcRoot, "kernel", "cmdline"), "root=/dev/nvme0n1p2 quiet\n")
+	f.writeFile(filepath.Join(f.espRoot, "loader", "entries", "fixture.conf"),
+		"title Fixture\noptions     root=/dev/nvme0n1p2 quiet\n")
 	f.addDevice("0000:c5:00.0", "0x1002", "0x030000", "amdgpu", map[string]string{
 		"mem_info_gtt_total": "133143986176\n", // 124 GiB
 		"gpu_busy_percent":   "97\n",
@@ -51,7 +61,30 @@ func newFixture(t *testing.T) *fixture {
 	f.writeFile(filepath.Join(f.device("0000:c5:00.0"), "drm", "renderD128", "dev"), "226:128\n")
 	f.addKFDNode("0", 0)
 	f.addKFDNode("1", 110501)
+	// The inbox amdgpu declares no taint, and the firmware is the unit's own,
+	// read 2026-10-06.
+	f.writeFile(filepath.Join(f.sysRoot, "module", "amdgpu", "taint"), "\n")
+	f.writeFile(filepath.Join(f.device("0000:c5:00.0"), "vbios_version"), "113-STRXLGEN-001\n")
+	for name, version := range fixtureFirmware {
+		f.writeFile(filepath.Join(f.device("0000:c5:00.0"), "fw_version", name+"_fw_version"), version+"\n")
+	}
 	return f
+}
+
+// fixtureFirmware is amd-halo's fw_version directory, 2026-10-06.
+var fixtureFirmware = map[string]string{
+	"asd":     "0x21000110",
+	"dmcub":   "0x09004700",
+	"imu":     "0x0b352300",
+	"mec":     "0x00000023",
+	"me":      "0x00000020",
+	"mes":     "0x00000088",
+	"mes_kiq": "0x0000006f",
+	"pfp":     "0x00000032",
+	"rlc":     "0x11530506",
+	"sdma":    "0x00000012",
+	"smc":     "0x0a640900",
+	"vcn":     "0x09118022",
 }
 
 // addKFDNode writes one KFD topology node's properties file.
@@ -78,7 +111,7 @@ func (f *fixture) addModuleParams(module string, params map[string]string) {
 }
 
 func (f *fixture) collector() Collector {
-	return Collector{ProcRoot: f.procRoot, SysRoot: f.sysRoot}
+	return Collector{ProcRoot: f.procRoot, SysRoot: f.sysRoot, EtcRoot: f.etcRoot, ESPRoot: f.espRoot}
 }
 
 func (f *fixture) writeFile(path, content string) {
@@ -623,4 +656,73 @@ func TestCollectRefusesToChooseBetweenTwoKFDAgents(t *testing.T) {
 		t.Errorf("GFXTargetVersion = %d with two GPU agents, want nil", *r.GFXTargetVersion)
 	}
 	messagesMention(t, r, "2 GPU agents")
+}
+
+func TestCollectReadsTheStack(t *testing.T) {
+	r := newFixture(t).collector().Collect()
+	if r.AMDGPUTaint == nil || *r.AMDGPUTaint != "" {
+		t.Errorf("AMDGPUTaint = %v, want a present empty taint for the inbox driver", r.AMDGPUTaint)
+	}
+	if r.TTMModule == nil || *r.TTMModule != "ttm" {
+		t.Errorf("TTMModule = %v, want ttm", r.TTMModule)
+	}
+	if r.VBIOSVersion == nil || *r.VBIOSVersion != "113-STRXLGEN-001" {
+		t.Errorf("VBIOSVersion = %v, want 113-STRXLGEN-001", r.VBIOSVersion)
+	}
+	if len(r.FirmwareVersions) != len(fixtureFirmware) || r.FirmwareVersions["mes"] != "0x00000088" {
+		t.Errorf("FirmwareVersions = %v, want every fixture entry keyed without the _fw_version suffix", r.FirmwareVersions)
+	}
+}
+
+// amdgpu-dkms marks its module out-of-tree and ships amdttm, whose pages_limit
+// then sizes GTT. Both must be read, and amdttm must win over the kernel's ttm.
+func TestCollectSeesAmdgpuDKMS(t *testing.T) {
+	f := newFixture(t)
+	f.writeFile(filepath.Join(f.sysRoot, "module", "amdgpu", "taint"), "O\n")
+	f.addModuleParams("amdttm", map[string]string{"pages_limit": "24692260\n"})
+
+	r := f.collector().Collect()
+	if r.AMDGPUTaint == nil || *r.AMDGPUTaint != "O" {
+		t.Errorf("AMDGPUTaint = %v, want O", r.AMDGPUTaint)
+	}
+	if r.TTMModule == nil || *r.TTMModule != "amdttm" {
+		t.Errorf("TTMModule = %v, want amdttm to win over ttm", r.TTMModule)
+	}
+	if r.ModuleParams["amdttm.pages_limit"] != "24692260" {
+		t.Errorf("amdttm.pages_limit = %q, want it read", r.ModuleParams["amdttm.pages_limit"])
+	}
+}
+
+func TestCollectUnreadableStackIsNil(t *testing.T) {
+	f := newFixture(t)
+	for _, p := range []string{
+		filepath.Join(f.sysRoot, "module", "amdgpu", "taint"),
+		filepath.Join(f.device("0000:c5:00.0"), "vbios_version"),
+	} {
+		if err := os.Remove(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(f.device("0000:c5:00.0"), "fw_version")); err != nil {
+		t.Fatal(err)
+	}
+
+	r := f.collector().Collect()
+	if r.AMDGPUTaint != nil || r.VBIOSVersion != nil || r.FirmwareVersions != nil {
+		t.Errorf("unreadable stack readings arrived as values: taint %v vbios %v firmware %v",
+			r.AMDGPUTaint, r.VBIOSVersion, r.FirmwareVersions)
+	}
+	for _, m := range []string{"taint", "vbios", "firmware"} {
+		messagesMention(t, r, m)
+	}
+}
+
+// The DKMS-only modules are absent on every inbox host; that is not news.
+func TestCollectSaysNothingAboutAbsentDKMSModules(t *testing.T) {
+	r := newFixture(t).collector().Collect()
+	for _, m := range r.Messages {
+		if strings.Contains(m, "amdttm") || strings.Contains(m, "amd_ttm") {
+			t.Errorf("an inbox host produced a message about a DKMS-only module: %q", m)
+		}
+	}
 }

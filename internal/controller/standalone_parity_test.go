@@ -38,6 +38,10 @@ func TestStandaloneAgreesWithTheController(t *testing.T) {
 		RatedSCLKMHz:     i32(2900),
 		DRMRenderNode:    ptr("renderD128"),
 		GFXTargetVersion: i32(110501),
+		AMDGPUTaint:      ptr(""),
+		TTMModule:        ptr("ttm"),
+		VBIOSVersion:     ptr("113-STRXLGEN-001"),
+		FirmwareVersions: map[string]string{"mes": "0x00000088", "smc": "0x0a640900"},
 	}
 	loaded := real
 	loaded.GPUBusyPercent = i32(97)
@@ -77,6 +81,7 @@ func TestStandaloneAgreesWithTheController(t *testing.T) {
 			MemoryPolicy:   halov1alpha1.MemoryPolicySpec{Enabled: func() *bool { f := false; return &f }()},
 			RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Enabled: func() *bool { f := false; return &f }()},
 			HealthChecks:   halov1alpha1.HealthChecksSpec{Enabled: func() *bool { f := false; return &f }()},
+			StackPolicy:    halov1alpha1.StackPolicySpec{Enabled: func() *bool { f := false; return &f }()},
 		},
 	}
 
