@@ -6,9 +6,10 @@
 //
 // It is not a second implementation. Every decision goes through the same
 // functions the cluster path uses: the reading is lifted by
-// nodeagent.SpecFromReading, translated by observe.MemoryObservation and
-// observe.HealthObservation, and judged by the memorypolicy and healthchecks
-// packages. The only thing this package removes is the transport — the
+// nodeagent.SpecFromReading, translated by observe.MemoryObservation,
+// observe.RuntimeObservation and observe.HealthObservation, and judged by the
+// memorypolicy, runtimeprofile and healthchecks packages. The only thing this
+// package removes is the transport — the
 // HaloNodeObservation round trip through an API server — so a node judged
 // here and a node judged by the controller get the same answer for the same
 // reading, by construction rather than by agreement.
@@ -23,6 +24,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"sigs.k8s.io/yaml"
@@ -31,6 +33,8 @@ import (
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
 	"github.com/baldwinSPC/halo-operator/internal/observe"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
+	"github.com/baldwinSPC/halo-operator/internal/stackpolicy"
 )
 
 // Exit codes. The first three are the operator's answer about the node; the
@@ -87,16 +91,35 @@ type ProbeLine struct {
 	Message string `json:"message"`
 }
 
+// BackendLine is one compute backend's outcome. It mirrors
+// runtimeprofile.BackendResult with serialization tags, as ProbeLine does for
+// the health probes.
+type BackendLine struct {
+	Backend string `json:"backend"`
+	Result  string `json:"result"`
+	Message string `json:"message"`
+}
+
+// CheckLine is one stack-policy check on this node: the driver and kernel, or
+// the GPU firmware against the known-bad list.
+type CheckLine struct {
+	Check   string `json:"check"`
+	Result  string `json:"result"`
+	Message string `json:"message"`
+}
+
 // ComponentReport is one component's state, in the same vocabulary the
 // HaloDeviceConfig status uses.
 type ComponentReport struct {
-	Name    string                      `json:"name"`
-	State   halov1alpha1.ComponentState `json:"state"`
-	Message string                      `json:"message,omitempty"`
-	Params  []ParamLine                 `json:"params,omitempty"`
-	Probes  []ProbeLine                 `json:"probes,omitempty"`
-	Images  []ImageLine                 `json:"images,omitempty"`
-	counted bool                        // whether it contributes to the Outcome
+	Name     string                      `json:"name"`
+	State    halov1alpha1.ComponentState `json:"state"`
+	Message  string                      `json:"message,omitempty"`
+	Params   []ParamLine                 `json:"params,omitempty"`
+	Probes   []ProbeLine                 `json:"probes,omitempty"`
+	Backends []BackendLine               `json:"backends,omitempty"`
+	Checks   []CheckLine                 `json:"checks,omitempty"`
+	Images   []ImageLine                 `json:"images,omitempty"`
+	counted  bool                        // whether it contributes to the Outcome
 }
 
 // Report is the evaluation of one node against one policy.
@@ -137,6 +160,9 @@ func Evaluate(node string, spec halov1alpha1.HaloNodeObservationSpec, cfg halov1
 	resolved := cfg.Spec.WithDefaults()
 	r := Report{Node: node, ObservedAt: spec.ObservedAt.Time, Messages: spec.Messages}
 
+	if note := memorypolicy.DeprecationNote(observe.MemoryPolicy(resolved.MemoryPolicy)); note != "" {
+		r.Warnings = append(r.Warnings, note)
+	}
 	if len(cfg.Spec.NodeSelector) > 0 {
 		r.Warnings = append(r.Warnings,
 			"spec.nodeSelector is ignored in standalone mode: there is exactly one node, and it is this one")
@@ -144,13 +170,9 @@ func Evaluate(node string, spec halov1alpha1.HaloNodeObservationSpec, cfg halov1
 
 	r.Components = []ComponentReport{
 		evaluateMemory(node, &spec, resolved),
+		evaluateRuntime(node, &spec, resolved),
 		evaluateHealth(node, &spec, resolved),
-		{
-			Name:  "runtime-profile",
-			State: halov1alpha1.ComponentNotImplemented,
-			Message: "not implemented yet; reported for completeness and excluded from the exit code, " +
-				"since it says nothing about this node",
-		},
+		evaluateStack(node, &spec, resolved),
 	}
 	r.Outcome, r.ExitCode = outcome(r.Components)
 	return r
@@ -269,6 +291,79 @@ func evaluateHealth(node string, spec *halov1alpha1.HaloNodeObservationSpec, s h
 		c.State = halov1alpha1.ComponentNotObserved
 	}
 	return c
+}
+
+func evaluateRuntime(node string, spec *halov1alpha1.HaloNodeObservationSpec, s halov1alpha1.HaloDeviceConfigSpec) ComponentReport {
+	c := ComponentReport{Name: "runtime-profile"}
+	if !*s.RuntimeProfile.Enabled {
+		c.State = halov1alpha1.ComponentDisabled
+		c.Message = "disabled by the policy"
+		return c
+	}
+	c.counted = true
+
+	obs := observe.RuntimeObservation(node, spec)
+	results := runtimeprofile.Evaluate(s.RuntimeProfile.Backends, obs)
+	for _, br := range results {
+		c.Backends = append(c.Backends, BackendLine{Backend: br.Backend, Result: string(br.Result), Message: br.Message})
+	}
+	summary := runtimeprofile.Summarize(results)
+	c.Message = summary.Message
+	switch summary.Result {
+	case runtimeprofile.ResultAvailable:
+		c.State = halov1alpha1.ComponentReady
+	case runtimeprofile.ResultUnavailable:
+		c.State = halov1alpha1.ComponentDegraded
+	default:
+		c.State = halov1alpha1.ComponentNotObserved
+	}
+	return c
+}
+
+func evaluateStack(node string, spec *halov1alpha1.HaloNodeObservationSpec, s halov1alpha1.HaloDeviceConfigSpec) ComponentReport {
+	c := ComponentReport{Name: "stack-policy"}
+	if !*s.StackPolicy.Enabled {
+		c.State = halov1alpha1.ComponentDisabled
+		c.Message = "disabled by the policy"
+		return c
+	}
+	c.counted = true
+
+	obs := observe.StackObservation(node, spec)
+	policy := observe.StackPolicy(s.StackPolicy)
+	stack := stackpolicy.EvaluateStack(policy, obs)
+	firmware := stackpolicy.EvaluateFirmware(policy, obs)
+	c.Checks = []CheckLine{checkLine("driver and kernel", stack), checkLine("gpu firmware", firmware)}
+
+	// The same reduction the controller makes: the worse of the two.
+	switch {
+	case stack.Verdict == stackpolicy.Drifted || firmware.Verdict == stackpolicy.Drifted:
+		c.State = halov1alpha1.ComponentDegraded
+		c.Message = "the node's stack disagrees with the policy"
+	case stack.Verdict == stackpolicy.Compliant && firmware.Verdict == stackpolicy.Compliant:
+		c.State = halov1alpha1.ComponentReady
+		c.Message = "inbox driver, kernel and GPU firmware all match the policy"
+	default:
+		c.State = halov1alpha1.ComponentNotObserved
+		c.Message = "part of the stack could not be read; compliance is not established"
+	}
+	return c
+}
+
+func checkLine(name string, f stackpolicy.Finding) CheckLine {
+	line := CheckLine{Check: name}
+	switch f.Verdict {
+	case stackpolicy.Compliant:
+		line.Result = LineOK
+		line.Message = "matches"
+	case stackpolicy.Drifted:
+		line.Result = LineDrift
+		line.Message = strings.Join(f.Problems, "; ")
+	default:
+		line.Result = LineUnobserved
+		line.Message = strings.Join(f.Unread, "; ")
+	}
+	return line
 }
 
 // outcome reduces component states to the node's answer, with the ordering

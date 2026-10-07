@@ -20,7 +20,8 @@
 //
 //   - Only kernel-documented amdgpu ABI is read (Documentation/gpu/amdgpu and
 //     Documentation/ABI): mem_info_gtt_total, gpu_busy_percent, pp_dpm_sclk,
-//     and the generic PCI attributes vendor, class and driver. What is NOT yet
+//     the generic PCI attributes vendor, class and driver, the device's DRM
+//     minors, and KFD's topology properties. What is NOT yet
 //     validated is how the first physical gfx1151 unit presents them — device
 //     enumeration, ladder shape, counter population (amd-smi is documented
 //     blind on APUs; sysfs is expected 1:1 but expected is not observed).
@@ -30,13 +31,17 @@
 package nodeagent
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Reading is everything one collection pass produced. Absent fields are nil;
@@ -61,6 +66,36 @@ type Reading struct {
 	SCLKMHz *int32
 	// RatedSCLKMHz is the top of the pp_dpm_sclk ladder.
 	RatedSCLKMHz *int32
+	// DRMRenderNode is the render node the kernel registered for the device,
+	// "" when its drm directory lists none.
+	DRMRenderNode *string
+	// GFXTargetVersion is KFD's gfx_target_version for the GPU agent, 0 when
+	// KFD lists none or is absent.
+	GFXTargetVersion *int32
+	// AMDGPUTaint is /sys/module/amdgpu/taint verbatim; "" for an inbox
+	// module with nothing to declare.
+	AMDGPUTaint *string
+	// TTMModule is the loaded TTM module ("ttm", "amdttm", "amd_ttm"), or ""
+	// when none is.
+	TTMModule *string
+	// FirmwareVersions is the device's fw_version directory, one entry per
+	// readable file. Nil when the directory could not be read.
+	FirmwareVersions map[string]string
+	// VBIOSVersion is the device's vbios_version.
+	VBIOSVersion *string
+	// ModprobeOptions is every /etc/modprobe.d options line for the modules
+	// in moduleParamModules, verbatim.
+	ModprobeOptions []string
+	// BootHold is the persisted boot configuration — /etc/kernel/cmdline and
+	// the Boot Loader Specification entries — which decides the NEXT boot.
+	// KernelCmdline above is the running one.
+	BootHold *BootHoldReading
+	// PermissionFaults counts GPU page faults with PERMISSION_FAULTS set in
+	// the kernel log window.
+	PermissionFaults *int32
+	// QueueCreateFailures counts GPU page faults from the CPF client, the
+	// command processor fetching a queue, in the kernel log window.
+	QueueCreateFailures *int32
 	// Messages explains every nil above.
 	Messages []string
 }
@@ -73,6 +108,22 @@ type Collector struct {
 	ProcRoot string
 	// SysRoot is where the host's /sys is visible, "/sys" by default.
 	SysRoot string
+	// EtcRoot is where the host's /etc is visible, "/etc" by default. Only
+	// <EtcRoot>/kernel/cmdline is ever read.
+	EtcRoot string
+	// KernelLog, when set, is read for the two GPU fault signatures the
+	// permission-fault and queue-create probes count. Nil leaves both counts
+	// absent, which those probes report as not observed, never as zero.
+	KernelLog KernelLogReader
+	// KernelLogWindow is how far back faults count. Zero means
+	// DefaultKernelLogWindow.
+	KernelLogWindow time.Duration
+	// ESPRoot is where the host's EFI system partition is visible, "/efi" by
+	// default. Only <ESPRoot>/loader/entries is ever listed.
+	//
+	// Mounting it read-only is the whole access this needs; the operator never
+	// writes a boot file.
+	ESPRoot string
 }
 
 // Collect performs one read of the node. It never fails as a whole: each
@@ -117,6 +168,34 @@ func (c Collector) Collect() Reading {
 	r.ModuleParams = params
 	r.Messages = append(r.Messages, paramMsgs...)
 
+	if taint, msg := readModuleTaint(sysRoot, "amdgpu"); taint == nil {
+		r.Messages = append(r.Messages, msg)
+	} else {
+		r.AMDGPUTaint = taint
+	}
+	if ttm, msg := readTTMModule(sysRoot); ttm == nil {
+		r.Messages = append(r.Messages, msg)
+	} else {
+		r.TTMModule = ttm
+	}
+
+	etcRoot := c.EtcRoot
+	if etcRoot == "" {
+		etcRoot = "/etc"
+	}
+	opts, msg := readModprobeOptions(filepath.Join(etcRoot, "modprobe.d"))
+	if msg != "" {
+		r.Messages = append(r.Messages, msg)
+	}
+	r.ModprobeOptions = opts
+
+	espRoot := c.ESPRoot
+	if espRoot == "" {
+		espRoot = "/efi"
+	}
+	r.BootHold = collectBootHold(etcRoot, espRoot)
+	r.Messages = append(r.Messages, bootHoldMessages(r.BootHold)...)
+
 	dev, msg := discoverAMDGPU(sysRoot)
 	if dev == "" {
 		r.Messages = append(r.Messages, msg)
@@ -155,11 +234,51 @@ func (c Collector) Collect() Reading {
 		}
 	}
 
-	// PermissionFaults and QueueCreateFailures are deliberately not collected.
-	// They come from the kernel log, and the line formats to match are
-	// hardware facts pending a physical gfx1151 unit; an unvalidated pattern
-	// that matches nothing would count zero faults, which reads as a healthy
-	// node. Absent readings keep those probes honestly NotObserved.
+	if node, msg := readRenderNode(dev); node == nil {
+		r.Messages = append(r.Messages, msg)
+	} else {
+		r.DRMRenderNode = node
+	}
+
+	if target, msg := readKFDTarget(sysRoot); target == nil {
+		r.Messages = append(r.Messages, msg)
+	} else {
+		r.GFXTargetVersion = target
+	}
+
+	if fw, msg := readFirmwareVersions(dev); fw == nil {
+		r.Messages = append(r.Messages, msg)
+	} else {
+		r.FirmwareVersions = fw
+	}
+	if raw, err := os.ReadFile(filepath.Join(dev, "vbios_version")); err != nil {
+		r.Messages = append(r.Messages, fmt.Sprintf("vbios: %v", err))
+	} else if v := strings.TrimSpace(string(raw)); v == "" || strings.ContainsAny(v, "\n\r") {
+		r.Messages = append(r.Messages, "vbios: vbios_version is empty or not one line")
+	} else {
+		r.VBIOSVersion = &v
+	}
+
+	// The kernel-log counters are read only when a reader is configured: it
+	// needs CAP_SYSLOG, which the agent holds only by opt-in. Without one they
+	// stay absent and the probes stay NotObserved, never a counted zero.
+	if c.KernelLog != nil {
+		window := c.KernelLogWindow
+		if window <= 0 {
+			window = DefaultKernelLogWindow
+		}
+		buf, err := c.KernelLog.Read()
+		now, nowErr := c.KernelLog.Now()
+		switch {
+		case err != nil:
+			r.Messages = append(r.Messages, fmt.Sprintf("kernel log: %v", err))
+		case nowErr != nil:
+			r.Messages = append(r.Messages, fmt.Sprintf("kernel log: the clock could not be read: %v", nowErr))
+		default:
+			permission, queue := countFaults(buf, now, window)
+			r.PermissionFaults, r.QueueCreateFailures = &permission, &queue
+		}
+	}
 
 	return r
 }
@@ -169,7 +288,15 @@ func (c Collector) Collect() Reading {
 // than derived from the policy because the agent does not see policies — and
 // because an agent that read an arbitrary caller-named path under /sys would
 // be a different, larger thing than this one.
-var moduleParamModules = []string{"amdgpu", "ttm"}
+//
+// amdttm and amd_ttm are the TTM copies amdgpu-dkms ships. On a DKMS host GTT
+// is sized by amdttm.pages_limit, and reading only ttm would leave the memory
+// policy blind on exactly the configuration AMD says breaks these nodes
+// (halo-operator#34). AMD's amd-smi probes the same three names.
+var moduleParamModules = []string{"amdgpu", "ttm", "amdttm", "amd_ttm"}
+
+// dkmsOnlyModules are loaded only when amdgpu-dkms is installed.
+var dkmsOnlyModules = map[string]bool{"amdttm": true, "amd_ttm": true}
 
 // readModuleParams reads the running value of every readable parameter of
 // moduleParamModules, keyed as the kernel command line would name it.
@@ -199,6 +326,12 @@ func readModuleParams(sysRoot string) (map[string]string, []string) {
 		dir := filepath.Join(sysRoot, "module", module, "parameters")
 		entries, err := os.ReadDir(dir)
 		if err != nil {
+			// The DKMS-only modules are absent on every inbox host, which is
+			// the configuration AMD recommends; saying so on every
+			// observation would bury the messages that matter.
+			if dkmsOnlyModules[module] && errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			// A module that is not loaded has no directory. That is a fact
 			// about the node, not a failure of the agent, so it is reported
 			// as a message and leaves every parameter of that module absent.
@@ -281,6 +414,208 @@ func discoverAMDGPU(sysRoot string) (dir string, reason string) {
 			"gpu: %d amdgpu devices found; device selection on multi-GPU nodes is pending hardware validation, so no counters were read",
 			len(candidates))
 	}
+}
+
+// readRenderNode names the DRM render node the kernel registered for the
+// device. DRM registers each minor as a child of its parent device, so the
+// device's own drm directory lists them (card0 and renderD128 on a single-GPU
+// node), and seeing that the render node exists needs no /dev mount.
+//
+// A missing drm directory is reported as unread, not as "no render node". An
+// amdgpu-bound device without one is not a layout this reader has seen, and
+// calling the node unable to run Vulkan on the strength of a layout assumption
+// would be an accusation nothing measured.
+func readRenderNode(dev string) (*string, string) {
+	entries, err := os.ReadDir(filepath.Join(dev, "drm"))
+	if err != nil {
+		return nil, fmt.Sprintf("render node: %v", err)
+	}
+	var found []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "renderD") {
+			found = append(found, e.Name())
+		}
+	}
+	switch len(found) {
+	case 0:
+		none := ""
+		return &none, ""
+	case 1:
+		return &found[0], ""
+	default:
+		return nil, fmt.Sprintf("render node: the device lists %d render nodes (%s) where one was expected",
+			len(found), strings.Join(found, ", "))
+	}
+}
+
+// readKFDTarget reads the gfx_target_version of the GPU compute agent in KFD's
+// topology. KFD lists one topology node per agent, and the CPU is one of them
+// with gfx_target_version 0; on amd-halo node 0 is the CPU and node 1 the GPU
+// at 110501 (gfx1151). Each properties file holds one "name value" pair per
+// line.
+//
+// Only an absent topology directory is a reading of zero: that is a kernel
+// with no KFD, which cannot run ROCm. Every other failure is unread. The
+// caller has already found exactly one amdgpu device, so more than one GPU
+// agent means the topology and the PCI bus disagree, and no choice is made.
+func readKFDTarget(sysRoot string) (*int32, string) {
+	dir := filepath.Join(sysRoot, "class", "kfd", "kfd", "topology", "nodes")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		zero := int32(0)
+		return &zero, ""
+	}
+	if err != nil {
+		return nil, fmt.Sprintf("kfd: %v", err)
+	}
+
+	var targets []int64
+	for _, e := range entries {
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name(), "properties"))
+		if err != nil {
+			return nil, fmt.Sprintf("kfd: %v", err)
+		}
+		v, err := kfdProperty(string(raw), "gfx_target_version")
+		if err != nil {
+			return nil, fmt.Sprintf("kfd topology node %s: %v", e.Name(), err)
+		}
+		if v > 0 {
+			targets = append(targets, v)
+		}
+	}
+
+	switch len(targets) {
+	case 0:
+		zero := int32(0)
+		return &zero, ""
+	case 1:
+		if targets[0] > math.MaxInt32 {
+			return nil, fmt.Sprintf("kfd: gfx_target_version %d is out of range", targets[0])
+		}
+		v := int32(targets[0])
+		return &v, ""
+	default:
+		return nil, fmt.Sprintf(
+			"kfd: topology lists %d GPU agents for one amdgpu device; no target was chosen", len(targets))
+	}
+}
+
+// kfdProperty finds one named property in a KFD properties file.
+func kfdProperty(properties, name string) (int64, error) {
+	for _, line := range strings.Split(properties, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != name {
+			continue
+		}
+		v, err := strconv.ParseInt(fields[1], 10, 64)
+		if err != nil || v < 0 {
+			return 0, fmt.Errorf("%s %q is not a non-negative decimal integer", name, fields[1])
+		}
+		return v, nil
+	}
+	return 0, fmt.Errorf("properties carry no %s", name)
+}
+
+// readModuleTaint reads /sys/module/<module>/taint, the kernel's taint flags
+// for that module, documented in Documentation/ABI/testing/sysfs-module. The
+// flags that matter here: "O" for an out-of-tree module, which is how
+// amdgpu-dkms shows up. Empty is a reading: an inbox module with nothing to
+// declare, measured on amd-halo 2026-10-06.
+func readModuleTaint(sysRoot, module string) (*string, string) {
+	raw, err := os.ReadFile(filepath.Join(sysRoot, "module", module, "taint"))
+	if err != nil {
+		return nil, fmt.Sprintf("taint: %v", err)
+	}
+	v := strings.TrimSpace(string(raw))
+	if strings.ContainsAny(v, "\n\r") {
+		return nil, "taint: the module's taint file holds more than one line"
+	}
+	return &v, ""
+}
+
+// ttmModules are the TTM memory managers in the order a DKMS one wins: when
+// amdgpu-dkms is installed, its amdttm is the one amdgpu uses even if the
+// kernel's own ttm is also loaded.
+var ttmModules = []string{"amdttm", "amd_ttm", "ttm"}
+
+// readTTMModule names the TTM module that is loaded, by the presence of its
+// /sys/module directory. "" is a reading: none is loaded.
+func readTTMModule(sysRoot string) (*string, string) {
+	for _, m := range ttmModules {
+		_, err := os.Stat(filepath.Join(sysRoot, "module", m))
+		if err == nil {
+			found := m
+			return &found, ""
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Sprintf("ttm module: %v", err)
+		}
+	}
+	none := ""
+	return &none, ""
+}
+
+// readFirmwareVersions reads the device's fw_version directory: one file per
+// firmware block, each one line ("0x00000088"). On amd-halo every file is mode
+// 0444, readable unprivileged (2026-10-06). A file that cannot be read, or
+// that is not one line, is left out; the directory itself failing is nil.
+func readFirmwareVersions(dev string) (map[string]string, string) {
+	dir := filepath.Join(dev, "fw_version")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Sprintf("firmware: %v", err)
+	}
+	out := map[string]string{}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		v := strings.TrimSpace(string(raw))
+		if v == "" || strings.ContainsAny(v, "\n\r") {
+			continue
+		}
+		out[strings.TrimSuffix(e.Name(), "_fw_version")] = v
+	}
+	if len(out) == 0 {
+		return nil, "firmware: the fw_version directory holds no readable entry"
+	}
+	return out, ""
+}
+
+// readModprobeOptions returns every `options` line for a module whose
+// parameters this agent reads, from dir/*.conf in name order, which is the
+// order modprobe reads them. Only /etc/modprobe.d is read: it is where an
+// administrator, and the platform's own ttm-config, put these settings.
+func readModprobeOptions(dir string) ([]string, string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Sprintf("modprobe.d: %v", err)
+	}
+	modules := map[string]bool{}
+	for _, m := range moduleParamModules {
+		modules[m] = true
+	}
+	var lines []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[0] == "options" && modules[fields[1]] {
+				lines = append(lines, strings.TrimSpace(line))
+			}
+		}
+	}
+	return lines, ""
 }
 
 // readSysfsInt64 reads a sysfs attribute holding one non-negative integer.

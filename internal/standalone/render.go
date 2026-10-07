@@ -15,6 +15,7 @@ import (
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 )
 
 // memoryParams are the module parameters that govern unified memory on this
@@ -88,13 +89,32 @@ func RenderInspect(w io.Writer, node string, spec halov1alpha1.HaloNodeObservati
 	default:
 		fmt.Fprintln(tw, "  shader clock\tnot observed")
 	}
+	fmt.Fprintf(tw, "  render node\t%s\n", renderNodeOrAbsent(spec.DRMRenderNode))
+	fmt.Fprintf(tw, "  KFD agent\t%s\n", kfdTargetOrAbsent(spec.GFXTargetVersion))
+	fmt.Fprintf(tw, "  amdgpu taint\t%s\n", taintOrAbsent(spec.AMDGPUTaint))
+	fmt.Fprintf(tw, "  TTM module\t%s\n", stringOrAbsent(spec.TTMModule, "none loaded"))
+	fmt.Fprintf(tw, "  VBIOS\t%s\n", stringOrAbsent(spec.VBIOSVersion, "(empty)"))
+	if spec.FirmwareVersions == nil {
+		fmt.Fprintln(tw, "  firmware\tnot observed")
+	} else {
+		names := make([]string, 0, len(spec.FirmwareVersions))
+		for k := range spec.FirmwareVersions {
+			names = append(names, k)
+		}
+		sort.Strings(names)
+		parts := make([]string, 0, len(names))
+		for _, k := range names {
+			parts = append(parts, k+"="+spec.FirmwareVersions[k])
+		}
+		fmt.Fprintf(tw, "  firmware\t%s\n", strings.Join(parts, " "))
+	}
 	tw.Flush()
 
 	fmt.Fprintln(w)
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "kernel-log counters\t")
-	fmt.Fprintf(tw, "  permission faults\t%s\n", countOrAbsent(spec.PermissionFaults, "no validated kernel-log reader yet"))
-	fmt.Fprintf(tw, "  queue-create failures\t%s\n", countOrAbsent(spec.QueueCreateFailures, "no validated kernel-log reader yet"))
+	fmt.Fprintf(tw, "  permission faults\t%s\n", countOrAbsent(spec.PermissionFaults, "kernel log not read (needs root)"))
+	fmt.Fprintf(tw, "  queue-create failures\t%s\n", countOrAbsent(spec.QueueCreateFailures, "kernel log not read (needs root)"))
 	tw.Flush()
 
 	if len(spec.Messages) > 0 {
@@ -134,6 +154,12 @@ func RenderCheck(w io.Writer, r Report, policyPath string) {
 		for _, p := range c.Probes {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(probeResult(p.Result)), p.Probe, p.Message)
 		}
+		for _, b := range c.Backends {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(backendResult(b.Result)), b.Backend, b.Message)
+		}
+		for _, ch := range c.Checks {
+			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(ch.Result), ch.Check, ch.Message)
+		}
 		for _, im := range c.Images {
 			fmt.Fprintf(tw, "  %s\t%s\t%s\n", marker(im.Result), im.Image, im.Detail)
 		}
@@ -169,8 +195,8 @@ func describeParam(p ParamLine) string {
 }
 
 // healthHint says the one useful thing when health is undecidable only
-// because of the kernel-log probes, which have no validated reader: scoping
-// the probes makes the condition decidable today.
+// because of the kernel-log probes: their counts need the kernel log, which
+// is readable only as root on a host with kernel.dmesg_restrict=1.
 func healthHint(c ComponentReport) string {
 	if c.Name != "health-checks" || c.State != halov1alpha1.ComponentNotObserved {
 		return ""
@@ -189,8 +215,8 @@ func healthHint(c ComponentReport) string {
 		return ""
 	}
 	sort.Strings(blocked)
-	return fmt.Sprintf("%s have no validated kernel-log reader, so they can never be observed yet; "+
-		"set healthChecks.probes to [clock-under-load] to make health decidable today",
+	return fmt.Sprintf("%s count faults in the kernel log, which is read only as root here "+
+		"(kernel.dmesg_restrict); run check as root, or set healthChecks.probes to [clock-under-load]",
 		strings.Join(blocked, " and "))
 }
 
@@ -225,6 +251,64 @@ func probeResult(r string) string {
 		return LineDrift
 	default:
 		return LineUnobserved
+	}
+}
+
+func backendResult(r string) string {
+	switch r {
+	case string(runtimeprofile.ResultAvailable):
+		return LineOK
+	case string(runtimeprofile.ResultUnavailable):
+		return LineDrift
+	default:
+		return LineUnobserved
+	}
+}
+
+// renderNodeOrAbsent keeps "read, and there is none" apart from "not read".
+func renderNodeOrAbsent(p *string) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == "":
+		return "none registered"
+	default:
+		return *p
+	}
+}
+
+// kfdTargetOrAbsent keeps "KFD lists no GPU agent" apart from "not read".
+func kfdTargetOrAbsent(p *int32) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == 0:
+		return "no GPU agent (or no KFD)"
+	default:
+		return fmt.Sprintf("%s (gfx_target_version %d)", runtimeprofile.GFXName(*p), *p)
+	}
+}
+
+// taintOrAbsent keeps "read, no flags" (the inbox driver) apart from "not read".
+func taintOrAbsent(p *string) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == "":
+		return "none (in-tree module)"
+	default:
+		return *p
+	}
+}
+
+func stringOrAbsent(p *string, empty string) string {
+	switch {
+	case p == nil:
+		return "not observed"
+	case *p == "":
+		return empty
+	default:
+		return *p
 	}
 }
 

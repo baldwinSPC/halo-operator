@@ -5,6 +5,7 @@ package memorypolicy
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -391,5 +392,68 @@ func TestFindingDescribe(t *testing.T) {
 	want := `amd_iommu expected "off" but was "on"; nomodeset expected "" but was not set`
 	if got != want {
 		t.Errorf("Describe() = %q, want %q", got, want)
+	}
+}
+
+// TestStagedDriftIsRebootPending is #31: amd-halo as delivered had
+// /etc/modprobe.d at 94 GiB while the running kernel sat at the 62.5 GiB
+// default. That is still drift, because a staged value is not in effect, but
+// the remedy is a reboot rather than a configuration change, and the summary
+// must say which.
+func TestStagedDriftIsRebootPending(t *testing.T) {
+	policy := Policy{ExpectedKernelArgs: map[string]string{"ttm.pages_limit": "24692260"}}
+	staged := Observation{
+		Node:               "staged",
+		KernelParams:       map[string]string{},
+		ModuleParams:       map[string]string{"ttm.pages_limit": "16395970"},
+		StagedModuleParams: map[string]string{"ttm.pages_limit": "24692260"},
+	}
+	unconfigured := staged
+	unconfigured.Node = "unconfigured"
+	unconfigured.StagedModuleParams = nil
+
+	f := Evaluate(policy, staged)
+	if f.Verdict != VerdictDrifted || len(f.Drifts) != 1 || !f.Drifts[0].Staged {
+		t.Fatalf("staged node: %+v, want one staged drift", f)
+	}
+	if !strings.Contains(f.Describe(), "staged") {
+		t.Errorf("Describe() = %q, want it to say the value is staged", f.Describe())
+	}
+	if s := Summarize([]Finding{f}); s.Verdict != VerdictDrifted || !s.RebootPending {
+		t.Errorf("summary of a staged node = %+v, want Drifted with RebootPending", s)
+	}
+	mixed := Summarize([]Finding{f, Evaluate(policy, unconfigured)})
+	if mixed.Verdict != VerdictDrifted || mixed.RebootPending {
+		t.Errorf("summary with an unconfigured node = %+v, want Drifted without RebootPending", mixed)
+	}
+}
+
+func TestParseModprobeOptions(t *testing.T) {
+	got := ParseModprobeOptions([]string{
+		"options ttm pages_limit=1 page_pool_size=2",
+		"options amdgpu gttsize",
+		"options ttm pages_limit=3",
+	})
+	if got["ttm.pages_limit"] != "3" || got["ttm.page_pool_size"] != "2" {
+		t.Errorf("got %v, want the later pages_limit to win and page_pool_size kept", got)
+	}
+	if _, ok := got["amdgpu.gttsize"]; ok {
+		t.Errorf("a parameter without a value was parsed: %v", got)
+	}
+	if ParseModprobeOptions(nil) != nil {
+		t.Error("no lines must parse to nil, not an empty map")
+	}
+}
+
+// The kernel deprecates amdgpu.gttsize in favour of ttm.pages_limit (#32): a
+// policy declaring it is still checked, but it gets a note naming the
+// replacement.
+func TestDeprecationNote(t *testing.T) {
+	note := DeprecationNote(Policy{ExpectedKernelArgs: map[string]string{"amdgpu.gttsize": "126976", "amd_iommu": "off"}})
+	if !strings.Contains(note, "amdgpu.gttsize") || !strings.Contains(note, "ttm.pages_limit") {
+		t.Errorf("note = %q, want it to name gttsize and its replacement", note)
+	}
+	if got := DeprecationNote(Policy{ExpectedKernelArgs: map[string]string{"ttm.pages_limit": "1"}}); got != "" {
+		t.Errorf("a policy without deprecated parameters got a note: %q", got)
 	}
 }

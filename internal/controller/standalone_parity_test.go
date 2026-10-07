@@ -13,6 +13,7 @@ import (
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
 	"github.com/baldwinSPC/halo-operator/internal/observe"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 	"github.com/baldwinSPC/halo-operator/internal/standalone"
 )
 
@@ -26,22 +27,32 @@ func TestStandaloneAgreesWithTheController(t *testing.T) {
 	ptr := func(s string) *string { return &s }
 	i64 := func(v int64) *int64 { return &v }
 
-	// The physical amd-halo reading, 2026-09-27, unprivileged.
+	// The physical amd-halo reading, 2026-09-27, unprivileged. The render
+	// node and KFD target are from #8's reading of the same unit, 2026-09-14.
 	real := halov1alpha1.HaloNodeObservationSpec{
-		KernelCmdline:  ptr("root=UUID=643b044c splash quiet loglevel=3"),
-		ModuleParams:   map[string]string{"ttm.pages_limit": "24692260"},
-		GTTTotalBytes:  i64(101139496960),
-		GPUBusyPercent: i32(0),
-		SCLKMHz:        i32(600),
-		RatedSCLKMHz:   i32(2900),
+		KernelCmdline:    ptr("root=UUID=643b044c splash quiet loglevel=3"),
+		ModuleParams:     map[string]string{"ttm.pages_limit": "24692260"},
+		GTTTotalBytes:    i64(101139496960),
+		GPUBusyPercent:   i32(0),
+		SCLKMHz:          i32(600),
+		RatedSCLKMHz:     i32(2900),
+		DRMRenderNode:    ptr("renderD128"),
+		GFXTargetVersion: i32(110501),
+		AMDGPUTaint:      ptr(""),
+		TTMModule:        ptr("ttm"),
+		VBIOSVersion:     ptr("113-STRXLGEN-001"),
+		FirmwareVersions: map[string]string{"mes": "0x00000088", "smc": "0x0a640900"},
 	}
 	loaded := real
 	loaded.GPUBusyPercent = i32(97)
 	loaded.SCLKMHz = i32(600) // stuck at idle under load: ROCm#5750
+	noKFD := real
+	noKFD.GFXTargetVersion = i32(0)
 
 	readings := map[string]halov1alpha1.HaloNodeObservationSpec{
 		"real node":              real,
 		"stuck clock under load": loaded,
+		"a kernel without KFD":   noKFD,
 		"nothing readable":       {},
 	}
 	policies := map[string]halov1alpha1.HaloDeviceConfigSpec{
@@ -63,9 +74,14 @@ func TestStandaloneAgreesWithTheController(t *testing.T) {
 			MemoryPolicy: halov1alpha1.MemoryPolicySpec{
 				ExpectedKernelArgs: map[string]string{"amdgpu.gttsize": "126976"}},
 		},
+		"vulkan only": {
+			RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Backends: []string{"vulkan"}},
+		},
 		"everything disabled": {
-			MemoryPolicy: halov1alpha1.MemoryPolicySpec{Enabled: func() *bool { f := false; return &f }()},
-			HealthChecks: halov1alpha1.HealthChecksSpec{Enabled: func() *bool { f := false; return &f }()},
+			MemoryPolicy:   halov1alpha1.MemoryPolicySpec{Enabled: func() *bool { f := false; return &f }()},
+			RuntimeProfile: halov1alpha1.RuntimeProfileSpec{Enabled: func() *bool { f := false; return &f }()},
+			HealthChecks:   halov1alpha1.HealthChecksSpec{Enabled: func() *bool { f := false; return &f }()},
+			StackPolicy:    halov1alpha1.StackPolicySpec{Enabled: func() *bool { f := false; return &f }()},
 		},
 	}
 
@@ -82,6 +98,8 @@ func TestStandaloneAgreesWithTheController(t *testing.T) {
 				healthObs := stubHealthObserver{observations: []healthchecks.Observation{observe.HealthObservation("n", &s)}}
 				ctrlMem, _ := evaluateMemoryPolicy(context.Background(), memObs, cfg, resolved, now)
 				ctrlHealth, _ := evaluateHealthChecks(context.Background(), healthObs, cfg, resolved, now)
+				runtimeObs := stubRuntimeObserver{observations: []runtimeprofile.Observation{observe.RuntimeObservation("n", &s)}}
+				ctrlRuntime, _ := evaluateRuntimeProfile(context.Background(), runtimeObs, cfg, resolved, now)
 
 				// The standalone path.
 				report := standalone.Evaluate("n", spec, *cfg)
@@ -95,6 +113,9 @@ func TestStandaloneAgreesWithTheController(t *testing.T) {
 				}
 				if got := byName[componentHealthChecks]; got != ctrlHealth.State {
 					t.Errorf("health-checks: standalone %s, controller %s", got, ctrlHealth.State)
+				}
+				if got := byName[componentRuntimeProfile]; got != ctrlRuntime.State {
+					t.Errorf("runtime-profile: standalone %s, controller %s", got, ctrlRuntime.State)
 				}
 			})
 		}

@@ -5,7 +5,8 @@
 // the decision packages consume. It is the controller-side half of the node
 // agent: the agent writes what it read, this package decides which of those
 // writings still count as knowledge — and nothing more. All policy about what
-// readings MEAN stays in internal/memorypolicy and internal/healthchecks.
+// readings MEAN stays in internal/memorypolicy, internal/healthchecks and
+// internal/runtimeprofile.
 //
 // The join is deliberately node-first: the set of nodes the policy targets
 // comes from listing Nodes by selector, and observations are matched to that
@@ -20,15 +21,20 @@ import (
 	"context"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
+	"github.com/baldwinSPC/halo-operator/internal/boothold"
 	"github.com/baldwinSPC/halo-operator/internal/healthchecks"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
+	"github.com/baldwinSPC/halo-operator/internal/stackpolicy"
 )
 
 // NodeFeatureLabelAMDGPU is the label Node Feature Discovery applies to nodes
@@ -45,7 +51,8 @@ const DefaultMaxAge = 5 * time.Minute
 
 // Observer reads Nodes and HaloNodeObservations from the cluster and produces
 // per-node observations for the reconciler. It implements the reconciler's
-// NodeObserver and HealthObserver interfaces.
+// NodeObserver, HealthObserver, RuntimeObserver, BootHoldObserver and
+// StackObserver interfaces.
 type Observer struct {
 	// Reader is the cluster to read from, usually the manager's cached client.
 	Reader client.Reader
@@ -97,9 +104,35 @@ func MemoryObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) 
 	// parse — each entry is already one parameter and one value — and nil
 	// stays nil so "no module directory was readable" does not arrive as
 	// "read fine, nothing set".
-	obs.ModuleParams = spec.ModuleParams
+	obs.ModuleParams = aliasDKMSTTM(spec.ModuleParams, spec.TTMModule)
+	obs.StagedModuleParams = aliasDKMSTTM(memorypolicy.ParseModprobeOptions(spec.ModprobeOptions), spec.TTMModule)
 	obs.EffectiveGPUMemoryGiB = gibFloor(spec.GTTTotalBytes)
 	return obs
+}
+
+// aliasDKMSTTM makes a policy that names ttm.<param> read the TTM module that
+// is actually loaded. amdgpu-dkms ships its own TTM as amdttm (or amd_ttm), and
+// on such a host GTT is sized by amdttm.pages_limit; a policy written against
+// the inbox name would otherwise read nothing and report not observed forever.
+// The out-of-tree driver itself is reported by the stack policy, not hidden by
+// this: aliasing only lets the memory policy read the value in effect.
+func aliasDKMSTTM(params map[string]string, ttmModule *string) map[string]string {
+	if params == nil || ttmModule == nil || *ttmModule == "" || *ttmModule == "ttm" {
+		return params
+	}
+	prefix := *ttmModule + "."
+	out := make(map[string]string, len(params))
+	for k, v := range params {
+		out[k] = v
+	}
+	for k, v := range params {
+		if name, ok := strings.CutPrefix(k, prefix); ok {
+			if _, inbox := out["ttm."+name]; !inbox {
+				out["ttm."+name] = v
+			}
+		}
+	}
+	return out
 }
 
 // ObserveHealth returns one health observation per targeted node.
@@ -132,6 +165,160 @@ func HealthObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) 
 	return obs
 }
 
+// ObserveRuntime returns one runtime-profile observation per targeted node.
+func (o *Observer) ObserveRuntime(ctx context.Context, selector map[string]string) ([]runtimeprofile.Observation, error) {
+	nodes, readings, err := o.join(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]runtimeprofile.Observation, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, RuntimeObservation(node, readings[node]))
+	}
+	return out, nil
+}
+
+// RuntimeObservation translates one node's published spec into what the
+// runtime profile judges. A nil spec yields both readings nil, which reports
+// every backend as not observed, never as available. Shared with the
+// standalone binary for the same reason as MemoryObservation.
+func RuntimeObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) runtimeprofile.Observation {
+	obs := runtimeprofile.Observation{Node: node}
+	if spec == nil {
+		return obs
+	}
+	if spec.DRMRenderNode != nil {
+		v := *spec.DRMRenderNode
+		obs.RenderNode = &v
+	}
+	obs.GFXTargetVersion = copyInt32(spec.GFXTargetVersion)
+	return obs
+}
+
+// ObserveBootHold returns one boot-hold verdict per targeted node.
+func (o *Observer) ObserveBootHold(ctx context.Context, selector map[string]string) ([]boothold.NodeResult, error) {
+	nodes, readings, err := o.join(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]boothold.NodeResult, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, boothold.NodeResult{Node: node, Result: boothold.Decide(BootHoldObservation(node, readings[node]))})
+	}
+	return out, nil
+}
+
+// etcKernelCmdlinePath names /etc/kernel/cmdline in boot-hold findings. The
+// reading itself carries no path, and the host path is the one a reader acts on.
+const etcKernelCmdlinePath = "/etc/kernel/cmdline"
+
+// BootHoldObservation translates one node's published spec into what the
+// boot-hold decision judges: whether the token is on the running command line,
+// and in which persisted files. A nil spec, or one with no boot-hold reading,
+// yields an observation the decision reports as not observed, never as
+// cleared. Shared with the standalone binary for the same reason as
+// MemoryObservation.
+func BootHoldObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) boothold.Observation {
+	obs := boothold.Observation{Node: node}
+	if spec == nil {
+		return obs
+	}
+	if spec.KernelCmdline != nil {
+		has := hasToken(*spec.KernelCmdline, boothold.HoldToken)
+		obs.RunningKernelHasToken = &has
+	}
+	bh := spec.BootHold
+	if bh == nil {
+		return obs
+	}
+	if bh.EtcKernelCmdline != nil {
+		obs.Files = append(obs.Files, boothold.FileReading{
+			Path: etcKernelCmdlinePath, HasToken: hasToken(*bh.EtcKernelCmdline, boothold.HoldToken)})
+	}
+	for _, e := range bh.LoaderEntries {
+		obs.Files = append(obs.Files, boothold.FileReading{Path: e.Path, HasToken: hasToken(e.Options, boothold.HoldToken)})
+	}
+	obs.Unreadable = append([]string(nil), bh.Unreadable...)
+	if bh.LoaderEntriesListed != nil {
+		obs.LoaderEntriesListed = *bh.LoaderEntriesListed
+	}
+	if bh.LoaderEntriesFound != nil {
+		obs.LoaderEntriesFound = int(*bh.LoaderEntriesFound)
+	}
+	return obs
+}
+
+// hasToken reports whether a kernel command line carries the token as a whole
+// argument. "splash" is a bare flag, so a substring match would also find it
+// inside a value such as "foo=splashscreen".
+func hasToken(cmdline, token string) bool {
+	for _, field := range strings.Fields(cmdline) {
+		if field == token {
+			return true
+		}
+	}
+	return false
+}
+
+// ObserveStack returns one stack-policy observation per targeted node.
+func (o *Observer) ObserveStack(ctx context.Context, selector map[string]string) ([]stackpolicy.Observation, error) {
+	nodes, readings, err := o.join(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]stackpolicy.Observation, 0, len(nodes))
+	for _, node := range nodes {
+		out = append(out, StackObservation(node, readings[node]))
+	}
+	return out, nil
+}
+
+// StackObservation translates one node's published spec into what the stack
+// policy judges. The VBIOS joins the per-block firmware map as "vbios", the
+// name a known-bad entry uses for it. A nil spec yields every reading nil.
+// Shared with the standalone binary for the same reason as MemoryObservation.
+func StackObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) stackpolicy.Observation {
+	obs := stackpolicy.Observation{Node: node}
+	if spec == nil {
+		return obs
+	}
+	obs.KernelRelease = copyString(spec.KernelRelease)
+	obs.AMDGPUTaint = copyString(spec.AMDGPUTaint)
+	obs.TTMModule = copyString(spec.TTMModule)
+	if spec.FirmwareVersions != nil || spec.VBIOSVersion != nil {
+		obs.Firmware = map[string]string{}
+		for k, v := range spec.FirmwareVersions {
+			obs.Firmware[k] = v
+		}
+		if spec.VBIOSVersion != nil {
+			obs.Firmware["vbios"] = *spec.VBIOSVersion
+		}
+	}
+	return obs
+}
+
+// StackPolicy lifts the CRD stanza into the decision package's own type.
+// The spec must already carry its defaults.
+func StackPolicy(spec halov1alpha1.StackPolicySpec) stackpolicy.Policy {
+	p := stackpolicy.Policy{
+		RequireInboxDriver: spec.RequireInboxDriver != nil && *spec.RequireInboxDriver,
+		MinKernelVersion:   spec.MinKernelVersion,
+	}
+	for _, b := range spec.KnownBadFirmware {
+		p.KnownBadFirmware = append(p.KnownBadFirmware,
+			stackpolicy.KnownBad{Component: b.Component, Version: b.Version, Reason: b.Reason})
+	}
+	return p
+}
+
+func copyString(p *string) *string {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
 // MemoryPolicy lifts the CRD stanza into the decision package's own type, so
 // that package never imports the API. Shared by the controller and the
 // standalone binary so a policy file means the same thing to both.
@@ -140,6 +327,20 @@ func MemoryPolicy(spec halov1alpha1.MemoryPolicySpec) memorypolicy.Policy {
 		ExpectedKernelArgs:       spec.ExpectedKernelArgs,
 		MinEffectiveGPUMemoryGiB: spec.MinEffectiveGPUMemoryGiB,
 	}
+}
+
+// ObservedAt returns, for each targeted node with a fresh observation, when it
+// was taken. A node without one is absent from the map.
+func (o *Observer) ObservedAt(ctx context.Context, selector map[string]string) (map[string]metav1.Time, error) {
+	_, readings, err := o.join(ctx, selector)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]metav1.Time, len(readings))
+	for node, spec := range readings {
+		out[node] = spec.ObservedAt
+	}
+	return out, nil
 }
 
 // join lists the targeted nodes and the fresh observation, if any, for each.

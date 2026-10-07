@@ -56,7 +56,8 @@ func haloPolicy() halov1alpha1.HaloDeviceConfigSpec {
 
 // haloNodeFixture is a fake /proc + /sys shaped like a healthy, compliant
 // Halo node: recommended kernel args, one amdgpu display device, 124 GiB of
-// GTT, busy at the top of its clock ladder.
+// GTT, busy at the top of its clock ladder, with a render node and a KFD GPU
+// agent at gfx1151 so it can run both backends.
 func haloNodeFixture(t *testing.T) nodeagent.Collector {
 	t.Helper()
 	root := t.TempDir()
@@ -80,6 +81,15 @@ func haloNodeFixture(t *testing.T) nodeagent.Collector {
 	write(filepath.Join(dev, "mem_info_gtt_total"), "133143986176\n")
 	write(filepath.Join(dev, "gpu_busy_percent"), "97\n")
 	write(filepath.Join(dev, "pp_dpm_sclk"), "0: 200Mhz\n1: 1100Mhz\n2: 2900Mhz *\n")
+	write(filepath.Join(dev, "drm", "renderD128", "dev"), "226:128\n")
+	kfd := filepath.Join(sysRoot, "class", "kfd", "kfd", "topology", "nodes")
+	write(filepath.Join(kfd, "0", "properties"), "cpu_cores_count 32\nsimd_count 0\ngfx_target_version 0\n")
+	write(filepath.Join(kfd, "1", "properties"), "cpu_cores_count 0\nsimd_count 80\ngfx_target_version 110501\n")
+	write(filepath.Join(sysRoot, "module", "amdgpu", "taint"), "\n")
+	write(filepath.Join(sysRoot, "module", "ttm", "parameters", "pages_limit"), "32505856\n")
+	write(filepath.Join(dev, "vbios_version"), "113-STRXLGEN-001\n")
+	write(filepath.Join(dev, "fw_version", "mes_fw_version"), "0x00000088\n")
+	write(filepath.Join(dev, "fw_version", "smc_fw_version"), "0x0a640900\n")
 	driver := filepath.Join(sysRoot, "bus", "pci", "drivers", "amdgpu")
 	if err := os.MkdirAll(driver, 0o755); err != nil {
 		t.Fatal(err)
@@ -87,7 +97,17 @@ func haloNodeFixture(t *testing.T) nodeagent.Collector {
 	if err := os.Symlink(driver, filepath.Join(dev, "driver")); err != nil {
 		t.Fatal(err)
 	}
-	return nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot}
+	// The boot-hold sources are part of a readable node now. Without them this
+	// fixture reads the HOST's /etc and /efi, which is a fixture sampling the
+	// machine — green on a box that happens to have neither, red on one that
+	// has one of them.
+	etcRoot := filepath.Join(filepath.Dir(procRoot), "etc")
+	espRoot := filepath.Join(filepath.Dir(procRoot), "efi")
+	write(filepath.Join(etcRoot, "kernel", "cmdline"), "root=/dev/nvme0n1p2 quiet\n")
+	write(filepath.Join(etcRoot, "modprobe.d", "ttm.conf"), "options ttm pages_limit=32505856\n")
+	write(filepath.Join(espRoot, "loader", "entries", "fixture.conf"),
+		"title Fixture\noptions     root=/dev/nvme0n1p2 quiet\n")
+	return nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot, EtcRoot: etcRoot, ESPRoot: espRoot}
 }
 
 // createAMDNode registers a Node carrying the NFD label the default selector
@@ -125,9 +145,12 @@ func collectAndPublish(t *testing.T, collector nodeagent.Collector, node string,
 func observingReconciler() *HaloDeviceConfigReconciler {
 	observer := &observe.Observer{Reader: k8sClient}
 	return &HaloDeviceConfigReconciler{
-		Client:         k8sClient,
-		MemoryObserver: observer,
-		HealthObserver: observer,
+		Client:           k8sClient,
+		MemoryObserver:   observer,
+		RuntimeObserver:  observer,
+		HealthObserver:   observer,
+		StackObserver:    observer,
+		BootHoldObserver: observer,
 	}
 }
 
@@ -152,9 +175,53 @@ func TestObservedCompliantNodeReachesTrue(t *testing.T) {
 	if health == nil || health.Status != metav1.ConditionTrue {
 		t.Fatalf("NodesHealthy = %+v, want True for the sysfs-backed probe", health)
 	}
+	backends := conditionOf(got, halov1alpha1.ConditionBackendsAvailable)
+	if backends == nil || backends.Status != metav1.ConditionTrue {
+		t.Fatalf("BackendsAvailable = %+v, want True for a node with a render node and a KFD GPU agent", backends)
+	}
+	if len(got.Status.Nodes) != 1 || got.Status.Nodes[0].ObservedAt == nil {
+		t.Errorf("status.nodes = %+v, want the node with the time its observation was taken", got.Status.Nodes)
+	}
 	component := componentOf(got, componentMemoryPolicy)
 	if component == nil || component.State != halov1alpha1.ComponentReady {
 		t.Errorf("memory-policy component = %+v, want Ready", component)
+	}
+	// Every component observed and healthy, through the shipped pipe: Ready
+	// is reachable, which it never was while runtime-profile was a stub.
+	ready := conditionOf(got, halov1alpha1.ConditionReady)
+	if ready == nil || ready.Status != metav1.ConditionTrue {
+		t.Errorf("Ready = %+v, want True", ready)
+	}
+}
+
+// TestNodeWithoutKFDCannotRunROCm: the same node with no KFD in its kernel.
+// It can still run Vulkan, so the verdict must be False, not Unknown — KFD's
+// absence was observed — and must name the backend and the node.
+func TestNodeWithoutKFDCannotRunROCm(t *testing.T) {
+	requireEnvtest(t)
+
+	collector := haloNodeFixture(t)
+	if err := os.RemoveAll(filepath.Join(collector.SysRoot, "class", "kfd")); err != nil {
+		t.Fatal(err)
+	}
+
+	node := createAMDNode(t, "flow-no-kfd")
+	collectAndPublish(t, collector, node.Name, metav1.Now())
+	createConfig(t, "flow-no-kfd-cfg", haloPolicy())
+
+	got := reconcileOnce(t, observingReconciler(), "flow-no-kfd-cfg")
+
+	backends := conditionOf(got, halov1alpha1.ConditionBackendsAvailable)
+	if backends == nil || backends.Status != metav1.ConditionFalse {
+		t.Fatalf("BackendsAvailable = %+v, want False for a node without KFD", backends)
+	}
+	for _, want := range []string{"rocm", node.Name} {
+		if !strings.Contains(backends.Message, want) {
+			t.Errorf("the condition does not name %q: %q", want, backends.Message)
+		}
+	}
+	if strings.Contains(backends.Message, "vulkan") {
+		t.Errorf("the condition blames vulkan, which this node can run: %q", backends.Message)
 	}
 }
 
@@ -186,6 +253,34 @@ func TestObservedDriftReachesFalseWithTheParameterNamed(t *testing.T) {
 	}
 }
 
+// TestStagedValueIsRebootPending is #31 through the shipped pipe: amd-halo as
+// delivered declared pages_limit in /etc/modprobe.d while the running kernel
+// had the default. The verdict stays False, since a staged value is not in
+// effect, but the reason is RebootPending, not plain drift.
+func TestStagedValueIsRebootPending(t *testing.T) {
+	requireEnvtest(t)
+
+	collector := haloNodeFixture(t)
+	if err := os.WriteFile(filepath.Join(collector.ProcRoot, "cmdline"),
+		[]byte("BOOT_IMAGE=/vmlinuz amd_iommu=off amdgpu.gttsize=126976 quiet\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(collector.SysRoot, "module", "ttm", "parameters", "pages_limit"),
+		[]byte("16395970\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	node := createAMDNode(t, "flow-staged")
+	collectAndPublish(t, collector, node.Name, metav1.Now())
+	createConfig(t, "flow-staged-cfg", haloPolicy())
+
+	got := reconcileOnce(t, observingReconciler(), "flow-staged-cfg")
+	memory := conditionOf(got, halov1alpha1.ConditionMemoryPolicyCompliant)
+	if memory == nil || memory.Status != metav1.ConditionFalse || memory.Reason != "RebootPending" {
+		t.Fatalf("MemoryPolicyCompliant = %+v, want False with reason RebootPending", memory)
+	}
+}
+
 // TestUnreadableNodeStaysUnknown: a node whose agent could not read anything —
 // no cmdline, no GPU — must hold the conditions at Unknown. It is the
 // difference between "wrong" and "unproven", and it is the line this operator
@@ -212,6 +307,10 @@ func TestUnreadableNodeStaysUnknown(t *testing.T) {
 	health := conditionOf(got, halov1alpha1.ConditionNodesHealthy)
 	if health == nil || health.Status != metav1.ConditionUnknown {
 		t.Fatalf("NodesHealthy = %+v for an unreadable node, want Unknown", health)
+	}
+	backends := conditionOf(got, halov1alpha1.ConditionBackendsAvailable)
+	if backends == nil || backends.Status != metav1.ConditionUnknown {
+		t.Fatalf("BackendsAvailable = %+v for an unreadable node, want Unknown", backends)
 	}
 }
 

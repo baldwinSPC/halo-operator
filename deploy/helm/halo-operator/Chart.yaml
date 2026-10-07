@@ -1,6 +1,6 @@
 apiVersion: v2
 name: halo-operator
-description: The AMD Halo Operator - node configuration for AMD Ryzen AI Max ("Strix Halo") Kubernetes nodes. Requires Kubernetes 1.29 or newer.
+description: The AMD Halo Operator - node configuration for AMD Ryzen AI Max ("Strix Halo") Kubernetes nodes. Requires Kubernetes 1.30 or newer (1.29 with agent.pinObservationNames=false).
 type: application
 # version is the chart version; appVersion is the operator version. Both are
 # rewritten by the release tooling, so the committed values are placeholders.

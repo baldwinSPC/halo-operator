@@ -91,20 +91,82 @@ type HaloNodeObservationSpec struct {
 	// +kubebuilder:validation:Minimum=0
 	RatedSCLKMHz *int32 `json:"ratedSCLKMHz,omitempty"`
 
-	// PermissionFaults counts PERMISSION_FAULT kernel-log entries in the
-	// agent's sampling window.
+	// DRMRenderNode is the DRM render node the kernel registered for the
+	// amdgpu device ("renderD128"), read from the device's drm directory in
+	// sysfs. It is the kernel interface Vulkan needs from the node, and ROCm
+	// needs it too.
 	//
-	// No reader sets this yet. The kernel-log line formats are hardware facts
-	// to be read off a physical gfx1151 unit, and an unvalidated pattern that
-	// matches nothing would report "0 faults" — a clean bill of health this
-	// operator has no grounds to issue. Until the patterns are validated the
-	// field stays absent and the probe correctly reports NotObserved.
+	// Present and empty is a reading: the device's drm directory was read and
+	// lists no render node, so the node cannot run either backend. Absent
+	// means it could not be read.
+	// +optional
+	DRMRenderNode *string `json:"drmRenderNode,omitempty"`
+
+	// GFXTargetVersion is the gfx_target_version of the GPU compute agent in
+	// KFD's topology (110501 is gfx1151). KFD, the kernel's /dev/kfd
+	// interface, is what ROCm needs from the node beyond the render node.
+	//
+	// Zero is a reading, not an absence. It is what KFD itself reports for an
+	// agent that is not a GPU, and it is published when the topology was read
+	// and lists no GPU agent, or when the kernel has no KFD at all. Absent
+	// means the topology could not be read, or it lists more than one GPU
+	// agent and the agent will not choose between them.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	GFXTargetVersion *int32 `json:"gfxTargetVersion,omitempty"`
+
+	// AMDGPUTaint is /sys/module/amdgpu/taint: the kernel's taint flags for
+	// the loaded amdgpu module, verbatim. Empty is a reading, the inbox
+	// driver with nothing to declare; "O" marks an out-of-tree module, which
+	// is how amdgpu-dkms shows up. Absent means it could not be read.
+	// +optional
+	AMDGPUTaint *string `json:"amdgpuTaint,omitempty"`
+
+	// TTMModule names the TTM memory manager module that is loaded: "ttm"
+	// for the kernel's own, or "amdttm" / "amd_ttm" for the copies
+	// amdgpu-dkms ships. GTT sizing lives in that module's pages_limit, so
+	// on a DKMS host ttm.pages_limit is read from amdttm. Empty is a reading:
+	// none is loaded. Absent means it could not be established.
+	// +optional
+	TTMModule *string `json:"ttmModule,omitempty"`
+
+	// FirmwareVersions is the GPU's per-block firmware versions, one entry
+	// per readable file of its fw_version directory in sysfs ("mes",
+	// "smc", ...), verbatim. On amd-halo every entry is mode 0444.
+	// +optional
+	FirmwareVersions map[string]string `json:"firmwareVersions,omitempty"`
+
+	// VBIOSVersion is the GPU's vbios_version.
+	// +optional
+	VBIOSVersion *string `json:"vbiosVersion,omitempty"`
+
+	// ModprobeOptions is every `options` line in /etc/modprobe.d/*.conf for
+	// the modules whose parameters are read above, verbatim, in the order
+	// modprobe reads the files. It is the declared intent the running values
+	// are compared against, so a value staged on disk but not yet in effect
+	// reads as RebootPending rather than as unconfigured (#31). It is evidence
+	// for the reason, never the verdict: modprobe.d is not what the running
+	// kernel has. Absent when nothing was read or nothing is declared.
+	// +optional
+	ModprobeOptions []string `json:"modprobeOptions,omitempty"`
+
+	// PermissionFaults counts GPU page faults whose status carries
+	// PERMISSION_FAULTS in the agent's kernel-log window (ROCm#6186's storm).
+	//
+	// Read only when the agent is given CAP_SYSLOG (agent.readKernelLog in the
+	// chart): amd-halo runs with kernel.dmesg_restrict=1. Without it the field
+	// is absent and the probe reports NotObserved, never a counted zero. The
+	// pattern is amdgpu's own format string for gfx11.5, checked against the
+	// dmesg real gfx1151 units logged in ROCm#6186 and #6118. The kernel
+	// rate-limits these prints, so a count is a lower bound.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	PermissionFaults *int32 `json:"permissionFaults,omitempty"`
 
-	// QueueCreateFailures counts KFD queue-creation failures in the agent's
-	// sampling window. Absent for the same reason as PermissionFaults.
+	// QueueCreateFailures counts GPU page faults from the CPF client, the
+	// command processor fetching a queue, in the same window: the fault
+	// hsa_queue_create triggers in ROCm#6118. Absent for the same reason as
+	// PermissionFaults.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	QueueCreateFailures *int32 `json:"queueCreateFailures,omitempty"`
@@ -114,6 +176,70 @@ type HaloNodeObservationSpec struct {
 	// these; absence itself carries the semantics.
 	// +optional
 	Messages []string `json:"messages,omitempty"`
+
+	// BootHold is what the agent read about the boot hold — the `splash`
+	// token that makes a headless unit wait for a display it does not have.
+	//
+	// The running kernel's own command line is KernelCmdline above; this
+	// carries only the PERSISTED sources, which decide the NEXT boot.
+	// +optional
+	BootHold *BootHoldReading `json:"bootHold,omitempty"`
+}
+
+// BootHoldReading is the persisted boot configuration, as the agent found it.
+//
+// It is a struct rather than loose fields because the readings are only
+// meaningful together: whether a file carries the token means nothing without
+// knowing whether every file was seen.
+type BootHoldReading struct {
+	// EtcKernelCmdline is the verbatim contents of /etc/kernel/cmdline, absent
+	// when it could not be read. Measured on RAH-001 it carries a leading and
+	// a trailing space, so it is stored unmodified and parsed by the reader.
+	// +optional
+	EtcKernelCmdline *string `json:"etcKernelCmdline,omitempty"`
+
+	// LoaderEntriesListed says the agent successfully listed the loader
+	// entries directory. Absent when the agent did not attempt it; false when
+	// the listing itself failed.
+	//
+	// A FAILED LISTING IS NOT AN EMPTY ONE, and this field is the only thing
+	// that distinguishes them. `filepath.Glob` cannot: it returns the same
+	// empty slice and nil error for a missing directory, an unreadable one and
+	// an empty one.
+	// +optional
+	LoaderEntriesListed *bool `json:"loaderEntriesListed,omitempty"`
+
+	// LoaderEntriesFound is how many entry files the listing returned.
+	//
+	// It may exceed len(LoaderEntries): the listing can succeed while
+	// individual entries cannot be opened, and those land in Unreadable. Zero
+	// is never an answer about the boot hold — a booted Boot Loader
+	// Specification unit has at least one entry, so a zero here is an
+	// untriggered autofs mount or a directory the agent cannot enter.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	LoaderEntriesFound *int32 `json:"loaderEntriesFound,omitempty"`
+
+	// LoaderEntries is one record per entry file the agent opened.
+	// +optional
+	LoaderEntries []LoaderEntryReading `json:"loaderEntries,omitempty"`
+
+	// Unreadable names every path the agent could not read, with the reason.
+	// Reading /efi/loader/entries needs root; a permission denial is NOT
+	// evidence that the entries are clean.
+	// +optional
+	Unreadable []string `json:"unreadable,omitempty"`
+}
+
+// LoaderEntryReading is one Boot Loader Specification type#1 entry.
+type LoaderEntryReading struct {
+	// Path is the file the agent opened, reported verbatim so a human is sent
+	// to the entry rather than to a category.
+	Path string `json:"path"`
+
+	// Options is the entry's `options` line, stored unmodified.
+	// +optional
+	Options string `json:"options,omitempty"`
 }
 
 // +kubebuilder:object:root=true

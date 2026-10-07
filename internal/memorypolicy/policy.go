@@ -54,6 +54,12 @@ type Observation struct {
 	// EffectiveGPUMemoryGiB is the GTT-visible GPU memory, or nil if it could
 	// not be read.
 	EffectiveGPUMemoryGiB *int32
+	// StagedModuleParams is what /etc/modprobe.d declares for each module
+	// parameter, keyed like ModuleParams. It is evidence for WHY a module
+	// parameter drifted, never for the verdict: a value on disk that the
+	// running kernel does not have is not in effect (#31). Nil when nothing
+	// was read or declared.
+	StagedModuleParams map[string]string
 }
 
 // Policy is the declared expectation, lifted out of the CRD so this package
@@ -78,6 +84,10 @@ type Drift struct {
 	Actual string
 	// Absent distinguishes "set to the wrong value" from "not set at all".
 	Absent bool
+	// Staged means /etc/modprobe.d already declares the expected value and
+	// the running kernel does not have it: the fix is on disk and only a
+	// reboot (into an initramfs that carries it, #20) is outstanding.
+	Staged bool
 }
 
 // Finding is the result of checking one node against one policy.
@@ -119,6 +129,7 @@ func Evaluate(policy Policy, obs Observation) Finding {
 			if actual != expected {
 				finding.Drifts = append(finding.Drifts, Drift{
 					Parameter: name, Expected: expected, Actual: actual,
+					Staged: source == sourceModule && obs.StagedModuleParams[name] == expected,
 				})
 			}
 		}
@@ -222,6 +233,10 @@ type Summary struct {
 	Verdict Verdict
 	// Message is a human-readable one-liner suitable for a status condition.
 	Message string
+	// RebootPending is true when the verdict is Drifted and every drift on
+	// every drifted node is staged: the configuration is right on disk and
+	// only reboots are outstanding.
+	RebootPending bool
 	// Drifted, NotObserved and Compliant count nodes by verdict.
 	Drifted     int
 	NotObserved int
@@ -252,8 +267,13 @@ func Summarize(findings []Finding) Summary {
 		summary.Message = "no node has been observed yet"
 	case summary.Drifted > 0:
 		summary.Verdict = VerdictDrifted
+		summary.RebootPending = allStaged(findings)
 		summary.Message = fmt.Sprintf("%s drifted from the declared memory policy",
 			nodeCount(summary.Drifted))
+		if summary.RebootPending {
+			summary.Message = fmt.Sprintf("%s run values other than declared, and /etc/modprobe.d already declares them; "+
+				"a reboot is outstanding", nodeCount(summary.Drifted))
+		}
 	case summary.NotObserved > 0:
 		summary.Verdict = VerdictNotObserved
 		summary.Message = fmt.Sprintf("%s not fully observed; compliance is not established",
@@ -277,7 +297,11 @@ func (f Finding) Describe() string {
 			parts = append(parts, fmt.Sprintf("%s expected %q but was not set", d.Parameter, d.Expected))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s expected %q but was %q", d.Parameter, d.Expected, d.Actual))
+		part := fmt.Sprintf("%s expected %q but was %q", d.Parameter, d.Expected, d.Actual)
+		if d.Staged {
+			part += " (staged in /etc/modprobe.d; takes effect at the next boot)"
+		}
+		parts = append(parts, part)
 	}
 	return strings.Join(parts, "; ")
 }
@@ -344,3 +368,63 @@ func ResolveParam(obs Observation, name string) (string, Source) {
 // Exported so that anything planning a change classifies parameters by the
 // same rule the verdict does.
 func IsModuleParam(name string) bool { return isModuleParam(name) }
+
+// allStaged reports whether every drift on every drifted node is staged.
+func allStaged(findings []Finding) bool {
+	for _, f := range findings {
+		if f.Verdict != VerdictDrifted {
+			continue
+		}
+		for _, d := range f.Drifts {
+			if !d.Staged {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// ParseModprobeOptions reads `options <module> <param>=<value> ...` lines into
+// parameters keyed as the kernel command line names them ("ttm.pages_limit").
+// A later line overrides an earlier one, as the kernel applies them. Lines
+// that are not options lines, or values without "=", are ignored: these are
+// evidence about intent, and a line this reader cannot parse is no evidence.
+func ParseModprobeOptions(lines []string) map[string]string {
+	var out map[string]string
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "options" {
+			continue
+		}
+		module := fields[1]
+		for _, kv := range fields[2:] {
+			k, v, ok := strings.Cut(kv, "=")
+			if !ok || k == "" {
+				continue
+			}
+			if out == nil {
+				out = map[string]string{}
+			}
+			out[module+"."+k] = v
+		}
+	}
+	return out
+}
+
+// deprecatedParams maps a deprecated parameter to its replacement. The kernel
+// says so itself: amdgpu_ttm_init warns "Configuring gttsize via module
+// parameter is deprecated, please use ttm.pages_limit".
+var deprecatedParams = map[string]string{"amdgpu.gttsize": "ttm.pages_limit"}
+
+// DeprecationNote names every deprecated parameter a policy declares and its
+// replacement, or returns "" when there is none. It is a note, not a verdict:
+// a declared parameter is still checked, because it may still be in effect.
+func DeprecationNote(policy Policy) string {
+	var notes []string
+	for _, name := range sortedKeys(policy.ExpectedKernelArgs) {
+		if replacement, ok := deprecatedParams[name]; ok {
+			notes = append(notes, fmt.Sprintf("%s is deprecated by the kernel; declare %s instead", name, replacement))
+		}
+	}
+	return strings.Join(notes, "; ")
+}

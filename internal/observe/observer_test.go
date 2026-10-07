@@ -20,6 +20,7 @@ import (
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
 	"github.com/baldwinSPC/halo-operator/internal/memorypolicy"
+	"github.com/baldwinSPC/halo-operator/internal/runtimeprofile"
 )
 
 // fixedNow is the test clock; observations are aged relative to it.
@@ -271,6 +272,66 @@ func TestObserveHealthMapsEveryReading(t *testing.T) {
 	}
 }
 
+func TestObserveRuntimeMapsEveryReading(t *testing.T) {
+	o := observer(t,
+		amdNode("halo-1"), amdNode("no-kfd"), amdNode("unread"),
+		observation("halo-1", time.Minute, func(s *halov1alpha1.HaloNodeObservationSpec) {
+			s.DRMRenderNode = str("renderD128")
+			s.GFXTargetVersion = i32(110501)
+		}),
+		// Present-and-empty and present-and-zero are readings, and must not
+		// arrive as nil: they are what makes a node observed-unable rather
+		// than unread.
+		observation("no-kfd", time.Minute, func(s *halov1alpha1.HaloNodeObservationSpec) {
+			s.DRMRenderNode = str("")
+			s.GFXTargetVersion = i32(0)
+		}),
+		observation("unread", time.Minute, nil),
+	)
+
+	got, err := o.ObserveRuntime(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ObserveRuntime: %v", err)
+	}
+	byNode := map[string]runtimeprofile.Observation{}
+	for _, obs := range got {
+		byNode[obs.Node] = obs
+	}
+	if len(byNode) != 3 {
+		t.Fatalf("got %d observations, want 3", len(byNode))
+	}
+
+	if r := byNode["halo-1"]; r.RenderNode == nil || *r.RenderNode != "renderD128" ||
+		r.GFXTargetVersion == nil || *r.GFXTargetVersion != 110501 {
+		t.Errorf("readings did not survive the mapping: %+v", r)
+	}
+	if r := byNode["no-kfd"]; r.RenderNode == nil || *r.RenderNode != "" ||
+		r.GFXTargetVersion == nil || *r.GFXTargetVersion != 0 {
+		t.Errorf("observed absences collapsed into unread: %+v", r)
+	}
+	if r := byNode["unread"]; r.RenderNode != nil || r.GFXTargetVersion != nil {
+		t.Errorf("an unread node arrived with readings: %+v", r)
+	}
+}
+
+func TestObserveRuntimeTreatsAStaleObservationAsUnread(t *testing.T) {
+	o := observer(t,
+		amdNode("halo-1"),
+		observation("halo-1", time.Hour, func(s *halov1alpha1.HaloNodeObservationSpec) {
+			s.DRMRenderNode = str("renderD128")
+			s.GFXTargetVersion = i32(110501)
+		}),
+	)
+
+	got, err := o.ObserveRuntime(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ObserveRuntime: %v", err)
+	}
+	if r := got[0]; r.RenderNode != nil || r.GFXTargetVersion != nil {
+		t.Errorf("an hour-old reading is still being judged: %+v", r)
+	}
+}
+
 func TestObserveHealthTreatsAStaleObservationAsUnread(t *testing.T) {
 	o := observer(t,
 		amdNode("halo-1"),
@@ -339,5 +400,42 @@ func TestGiBFloor(t *testing.T) {
 				t.Errorf("gibFloor = %d, want %d", *got, *tc.want)
 			}
 		})
+	}
+}
+
+func TestStackObservationFoldsTheVBIOSIntoFirmware(t *testing.T) {
+	obs := StackObservation("n", &halov1alpha1.HaloNodeObservationSpec{
+		AMDGPUTaint:      str(""),
+		TTMModule:        str("ttm"),
+		FirmwareVersions: map[string]string{"mes": "0x00000088"},
+		VBIOSVersion:     str("113-STRXLGEN-001"),
+	})
+	if obs.Firmware["mes"] != "0x00000088" || obs.Firmware["vbios"] != "113-STRXLGEN-001" {
+		t.Errorf("Firmware = %v, want mes and vbios", obs.Firmware)
+	}
+	if obs.AMDGPUTaint == nil || *obs.AMDGPUTaint != "" {
+		t.Errorf("an empty taint did not survive as a reading: %v", obs.AMDGPUTaint)
+	}
+	if empty := StackObservation("n", &halov1alpha1.HaloNodeObservationSpec{}); empty.Firmware != nil {
+		t.Errorf("no firmware readings produced a non-nil map %v; unread must stay nil", empty.Firmware)
+	}
+}
+
+// On a DKMS host GTT is sized by amdttm.pages_limit; a policy written as
+// ttm.pages_limit must read it rather than report not observed forever.
+func TestMemoryObservationReadsTheLoadedTTM(t *testing.T) {
+	obs := MemoryObservation("n", &halov1alpha1.HaloNodeObservationSpec{
+		ModuleParams: map[string]string{"amdttm.pages_limit": "24692260"},
+		TTMModule:    str("amdttm"),
+	})
+	if got := obs.ModuleParams["ttm.pages_limit"]; got != "24692260" {
+		t.Errorf("ttm.pages_limit = %q, want amdttm's value", got)
+	}
+	inbox := MemoryObservation("n", &halov1alpha1.HaloNodeObservationSpec{
+		ModuleParams: map[string]string{"ttm.pages_limit": "1", "amdttm.pages_limit": "2"},
+		TTMModule:    str("ttm"),
+	})
+	if got := inbox.ModuleParams["ttm.pages_limit"]; got != "1" {
+		t.Errorf("with the kernel's ttm loaded, ttm.pages_limit = %q, want its own value", got)
 	}
 }

@@ -50,7 +50,12 @@ spec:
         args:
         - --proc-root=/host/proc
         - --sys-root=/host/sys
+        - --etc-root=/host/etc
+        - --esp-root=/host/efi
         - --interval={{ .Values.agent.interval }}
+        {{- if .Values.agent.readKernelLog }}
+        - --kernel-log
+        {{- end }}
         {{- with .Values.agent.extraArgs }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -60,7 +65,22 @@ spec:
             fieldRef:
               fieldPath: spec.nodeName
         securityContext:
-          {{- toYaml .Values.securityContext | nindent 10 }}
+          {{- $sc := deepCopy .Values.securityContext }}
+          {{- if .Values.agent.readBootEntries }}
+          {{- /* Root by uid only: the entries are owned by root and mode 0700,
+                 so owner permission is enough and no capability is added. */}}
+          {{- $_ := set $sc "runAsUser" 0 }}
+          {{- $_ := set $sc "runAsNonRoot" false }}
+          {{- end }}
+          {{- if .Values.agent.readKernelLog }}
+          {{- /* syslog(2) with kernel.dmesg_restrict=1 needs CAP_SYSLOG, and
+                 the runtime's default seccomp profile admits syslog only with
+                 it. Everything else stays dropped. */}}
+          {{- $caps := deepCopy (default (dict) $sc.capabilities) }}
+          {{- $_ := set $caps "add" (list "SYSLOG") }}
+          {{- $_ := set $sc "capabilities" $caps }}
+          {{- end }}
+          {{- toYaml $sc | nindent 10 }}
         resources:
           {{- toYaml .Values.agent.resources | nindent 10 }}
         volumeMounts:
@@ -78,6 +98,26 @@ spec:
         - name: sys
           mountPath: /host/sys
           readOnly: true
+        # Declared module options, read as the intent the running values are
+        # compared against, so a value staged but not yet booted reads as
+        # RebootPending (#31).
+        - name: etc-modprobe
+          mountPath: /host/etc/modprobe.d
+          readOnly: true
+        {{- if .Values.agent.readBootEntries }}
+        # The boot hold's PERSISTED sources. Read-only, and the operator never
+        # writes them: removing `splash` is Glimmer's signed-task path.
+        - name: etc-kernel
+          mountPath: /host/etc/kernel
+          readOnly: true
+        - name: esp
+          mountPath: /host/efi
+          readOnly: true
+          # /efi is autofs: the ESP is mounted on first access, in the host's
+          # mount namespace. HostToContainer lets that mount reach the agent;
+          # without it the agent sees the empty autofs directory forever.
+          mountPropagation: HostToContainer
+        {{- end }}
       volumes:
       - name: proc-cmdline
         hostPath:
@@ -91,6 +131,33 @@ spec:
         hostPath:
           path: /sys
           type: Directory
+      - name: etc-modprobe
+        hostPath:
+          path: /etc/modprobe.d
+          type: Directory
+      {{- if .Values.agent.readBootEntries }}
+      - name: etc-kernel
+        hostPath:
+          path: /etc/kernel
+          type: Directory
+      # /efi is an AUTOFS mount on a Strix Halo unit (systemd-1 ->
+      # /dev/nvme0n1p1, vfat). A container can see this as an EMPTY directory
+      # until the mount is triggered — no error and no permission denial.
+      #
+      # That is handled rather than prevented: the agent reports the listing
+      # and its count separately, and the operator turns an empty listing into
+      # BootHoldCleared=Unknown, never True. An empty ESP is not a cleared
+      # unit.
+      #
+      # AND THE ENTRIES ARE MODE 0700, ROOT-ONLY, which is why these mounts
+      # come only with agent.readBootEntries, which also runs the agent as
+      # uid 0 (halo-operator#13). Both are type Directory, so a node without
+      # them fails loudly rather than letting the runtime create the path.
+      - name: esp
+        hostPath:
+          path: /efi
+          type: Directory
+      {{- end }}
       {{- with .Values.agent.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

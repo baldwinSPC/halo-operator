@@ -536,3 +536,61 @@ func TestMalformedDigestFailsTheRender(t *testing.T) {
 		t.Errorf("the failure does not say what a digest must look like: %s", out)
 	}
 }
+
+// TestAgentReadsBootEntriesOnlyWhenAskedTo pins #13's privilege decision: the
+// boot loader entries are root-only, so reading them runs the agent as uid 0,
+// and that happens only on request. Without the opt-in the agent stays
+// non-root with no boot-entry mounts. With it, nothing beyond the uid
+// changes: every capability stays dropped and every mount stays read-only.
+func TestAgentReadsBootEntriesOnlyWhenAskedTo(t *testing.T) {
+	plain := documentOfKind(t, render(t), "DaemonSet")
+	for _, absent := range []string{"path: /efi", "path: /etc/kernel", "runAsUser: 0"} {
+		if strings.Contains(plain, absent) {
+			t.Errorf("the default DaemonSet contains %q; reading boot entries must be opt-in", absent)
+		}
+	}
+
+	opted := documentOfKind(t, render(t, "--set", "agent.readBootEntries=true"), "DaemonSet")
+	for _, want := range []string{
+		"runAsUser: 0",
+		"runAsNonRoot: false",
+		"path: /efi",
+		"path: /etc/kernel",
+		"mountPropagation: HostToContainer",
+		"allowPrivilegeEscalation: false",
+		"readOnlyRootFilesystem: true",
+		"- ALL",
+	} {
+		if !strings.Contains(opted, want) {
+			t.Errorf("the opted-in DaemonSet is missing %q:\n%s", want, opted)
+		}
+	}
+	for _, forbidden := range []string{"privileged: true", "add:", "hostPID: true"} {
+		if strings.Contains(opted, forbidden) {
+			t.Errorf("reading boot entries granted more than a uid: %q is present", forbidden)
+		}
+	}
+	if hostPaths, ro := strings.Count(opted, "hostPath:"), strings.Count(opted, "readOnly: true"); ro < hostPaths {
+		t.Errorf("%d hostPath volumes but only %d read-only mounts", hostPaths, ro)
+	}
+}
+
+// TestAgentReadsTheKernelLogOnlyWhenAskedTo pins #5's privilege: CAP_SYSLOG,
+// added only by opt-in, and nothing else with it.
+func TestAgentReadsTheKernelLogOnlyWhenAskedTo(t *testing.T) {
+	plain := documentOfKind(t, render(t), "DaemonSet")
+	if strings.Contains(plain, "SYSLOG") || strings.Contains(plain, "--kernel-log") {
+		t.Errorf("the default DaemonSet reads the kernel log; it must be opt-in:\n%s", plain)
+	}
+	opted := documentOfKind(t, render(t, "--set", "agent.readKernelLog=true"), "DaemonSet")
+	for _, want := range []string{"- SYSLOG", "- --kernel-log", "- ALL", "runAsNonRoot: true"} {
+		if !strings.Contains(opted, want) {
+			t.Errorf("the opted-in DaemonSet is missing %q:\n%s", want, opted)
+		}
+	}
+	for _, forbidden := range []string{"privileged: true", "/dev/kmsg", "runAsUser: 0"} {
+		if strings.Contains(opted, forbidden) {
+			t.Errorf("reading the kernel log brought %q with it", forbidden)
+		}
+	}
+}

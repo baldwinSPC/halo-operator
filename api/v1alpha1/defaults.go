@@ -3,9 +3,8 @@
 
 package v1alpha1
 
-// DefaultBackend is the runtime backend when none is set. Vulkan is the
-// reliability and single-stream performance choice on gfx1151.
-const DefaultBackend = "vulkan"
+// KnownBackends is every compute backend, in the order they are defaulted.
+var KnownBackends = []string{"vulkan", "rocm"}
 
 // KnownProbes is every health probe, in the order they are defaulted.
 var KnownProbes = []string{"clock-under-load", "permission-fault", "queue-create"}
@@ -16,9 +15,12 @@ var KnownProbes = []string{"clock-under-load", "permission-fault", "queue-create
 func (s HaloDeviceConfigSpec) WithDefaults() HaloDeviceConfigSpec {
 	out := *s.DeepCopy()
 	out.MemoryPolicy.Enabled = defaultTrue(out.MemoryPolicy.Enabled)
+	out.RuntimeProfile.Enabled = defaultTrue(out.RuntimeProfile.Enabled)
 	out.HealthChecks.Enabled = defaultTrue(out.HealthChecks.Enabled)
-	if out.RuntimeProfile.Backend == "" {
-		out.RuntimeProfile.Backend = DefaultBackend
+	out.StackPolicy.Enabled = defaultTrue(out.StackPolicy.Enabled)
+	out.StackPolicy.RequireInboxDriver = defaultTrue(out.StackPolicy.RequireInboxDriver)
+	if len(out.RuntimeProfile.Backends) == 0 {
+		out.RuntimeProfile.Backends = append([]string(nil), KnownBackends...)
 	}
 	if len(out.HealthChecks.Probes) == 0 {
 		out.HealthChecks.Probes = append([]string(nil), KnownProbes...)

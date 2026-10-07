@@ -27,6 +27,8 @@ const (
 	componentMemoryPolicy   = "memory-policy"
 	componentRuntimeProfile = "runtime-profile"
 	componentHealthChecks   = "health-checks"
+	componentStackPolicy    = "stack-policy"
+	componentBootHold       = "boot-hold"
 )
 
 // HaloDeviceConfigReconciler reconciles a HaloDeviceConfig.
@@ -38,9 +40,23 @@ type HaloDeviceConfigReconciler struct {
 	// NotObserved rather than quietly treated as compliance.
 	MemoryObserver NodeObserver
 
+	// BootHoldObserver reads the persisted boot configuration of the targeted
+	// nodes. Nil means no source is wired up, reported as NotObserved rather
+	// than quietly treated as a cleared hold.
+	BootHoldObserver BootHoldObserver
+
+	// StackObserver reads the driver, kernel and GPU firmware of the targeted
+	// nodes. A nil observer is reported as NotObserved.
+	StackObserver StackObserver
+
 	// HealthObserver reads the health signals of the targeted nodes. A nil
 	// observer is reported as NotObserved, never as a clean bill of health.
 	HealthObserver HealthObserver
+
+	// RuntimeObserver reads whether the targeted nodes expose what each
+	// compute backend needs. A nil observer is reported as NotObserved, never
+	// as a backend being available.
+	RuntimeObserver RuntimeObserver
 
 	// RecheckPeriod re-runs the evaluation this often even with no cluster
 	// events. Observations expire by aging past the freshness window, which
@@ -49,39 +65,6 @@ type HaloDeviceConfigReconciler struct {
 	// on the strength of an observation nobody can refresh. Zero disables
 	// the backstop, for tests that drive reconciles by hand.
 	RecheckPeriod time.Duration
-}
-
-// component pairs a stanza name with its resolved enablement.
-type component struct {
-	name    string
-	enabled bool
-}
-
-// notYetImplemented lists the stanzas whose controllers do not exist yet, in
-// status order. memory-policy and health-checks are absent from it because
-// they are implemented.
-func notYetImplemented(spec halov1alpha1.HaloDeviceConfigSpec) []component {
-	return []component{
-		{componentRuntimeProfile, true},
-	}
-}
-
-// componentStatuses reports each not-yet-implemented component honestly:
-// Disabled when the spec disables it, NotImplemented while its controller does
-// not exist yet. No component is ever reported Ready without an observation.
-func componentStatuses(spec halov1alpha1.HaloDeviceConfigSpec, now metav1.Time) []halov1alpha1.ComponentStatus {
-	var out []halov1alpha1.ComponentStatus
-	for _, c := range notYetImplemented(spec) {
-		st := halov1alpha1.ComponentStatus{Name: c.name, LastObserved: now}
-		if !c.enabled {
-			st.State = halov1alpha1.ComponentDisabled
-		} else {
-			st.State = halov1alpha1.ComponentNotImplemented
-			st.Message = "this component's controller is not implemented yet; see the repository issue tracker"
-		}
-		out = append(out, st)
-	}
-	return out
 }
 
 // readyCondition summarises the components into the overall Ready condition.
@@ -137,13 +120,21 @@ func (r *HaloDeviceConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	now := metav1.Now()
 
 	memoryStatus, memoryCondition := evaluateMemoryPolicy(ctx, r.MemoryObserver, &cfg, spec, now)
+	runtimeStatus, runtimeCondition := evaluateRuntimeProfile(ctx, r.RuntimeObserver, &cfg, spec, now)
 	healthStatus, healthCondition := evaluateHealthChecks(ctx, r.HealthObserver, &cfg, spec, now)
+	stackStatus, stackCondition, firmwareCondition := evaluateStackPolicy(ctx, r.StackObserver, &cfg, spec, now)
+	bootHoldStatus, bootHoldCondition := evaluateBootHold(ctx, r.BootHoldObserver, &cfg, spec, now)
 
 	cfg.Status.ObservedGeneration = cfg.Generation
-	cfg.Status.Components = append([]halov1alpha1.ComponentStatus{memoryStatus, healthStatus},
-		componentStatuses(spec, now)...)
+	cfg.Status.Components = []halov1alpha1.ComponentStatus{
+		memoryStatus, runtimeStatus, healthStatus, stackStatus, bootHoldStatus}
+	cfg.Status.Nodes, cfg.Status.NodesOmitted = r.nodeStatuses(ctx, spec, now)
 	meta.SetStatusCondition(&cfg.Status.Conditions, memoryCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, runtimeCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions, healthCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, stackCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, firmwareCondition)
+	meta.SetStatusCondition(&cfg.Status.Conditions, bootHoldCondition)
 	meta.SetStatusCondition(&cfg.Status.Conditions,
 		readyCondition(cfg.Status.Components, cfg.Generation))
 

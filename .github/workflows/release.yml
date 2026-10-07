@@ -9,7 +9,9 @@
 #     and referenced by digest;
 #   - the standalone `halo` binaries, with SHA256SUMS;
 #   - the Helm chart, whose version and appVersion are the release's and
-#     whose values pin the image by that digest.
+#     whose values pin the image by that digest, as a release asset and at
+#     oci://ghcr.io/baldwinspc/charts/halo-operator, where Glimmer's addon
+#     installs it from, pinned by the tarball's sha256.
 #
 # Every artifact is verified AFTER it is built rather than trusted from the
 # recipe that built it. A registry saying "arm64" has shipped an x86-64 binary
@@ -190,6 +192,32 @@ jobs:
           (cd dist && sha256sum halo-linux-* halo-operator-*.tgz > SHA256SUMS)
           cat dist/SHA256SUMS
 
+      - name: Push the chart to OCI, and read it back
+        id: chart
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ver="${{ steps.v.outputs.version }}"
+          tgz="dist/halo-operator-${ver}.tgz"
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "${{ github.actor }}" --password-stdin
+          out=$(helm push "$tgz" oci://ghcr.io/baldwinspc/charts 2>&1); echo "$out"
+          manifest=$(printf '%s\n' "$out" | sed -n 's/^Digest: //p')
+          printf '%s' "$manifest" | grep -Eq '^sha256:[0-9a-f]{64}$' || { echo "::error::helm push printed no manifest digest"; exit 1; }
+          # Read it back rather than trust the push. Glimmer pins the chart by
+          # the TARBALL's sha256 (internal/k8s/addons Chart.Digest, produced by
+          # helm pull + shasum), not by the manifest digest, so the bytes the
+          # registry serves for this version must be the bytes built here.
+          mkdir -p pulled
+          pull=$(helm pull oci://ghcr.io/baldwinspc/charts/halo-operator --version "$ver" --destination pulled 2>&1); echo "$pull"
+          pulled_manifest=$(printf '%s\n' "$pull" | sed -n 's/^Digest: //p')
+          [ "$pulled_manifest" = "$manifest" ] || { echo "::error::pushed manifest ${manifest}, pulled ${pulled_manifest}"; exit 1; }
+          built=$(sha256sum "$tgz" | cut -d' ' -f1)
+          served=$(sha256sum "pulled/halo-operator-${ver}.tgz" | cut -d' ' -f1)
+          [ "$built" = "$served" ] || { echo "::error::the registry served tarball ${served}, not the built ${built}"; exit 1; }
+          echo "manifest=${manifest}" >> "$GITHUB_OUTPUT"
+          echo "tarball=${built}" >> "$GITHUB_OUTPUT"
+          echo "chart oci://ghcr.io/baldwinspc/charts/halo-operator:${ver} manifest ${manifest} tarball sha256 ${built}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -202,9 +230,13 @@ jobs:
             echo "**Image** — \`${IMAGE}:${ver}@${digest}\` (linux/amd64, linux/arm64)."
             echo "The chart below pulls this exact digest."
             echo
-            echo "**Chart** — \`halo-operator-${ver}.tgz\`:"
+            echo "**Chart** — \`halo-operator-${ver}.tgz\`, also at \`oci://ghcr.io/baldwinspc/charts/halo-operator\` version \`${ver}\`:"
+            echo
+            echo "- tarball sha256 \`${{ steps.chart.outputs.tarball }}\`, which is what Glimmer's addon pins as \`Chart.Digest\`"
+            echo "- OCI manifest \`${{ steps.chart.outputs.manifest }}\`"
+            echo
             echo '```sh'
-            echo "helm install halo-operator halo-operator-${ver}.tgz --namespace halo-system --create-namespace"
+            echo "helm install halo-operator oci://ghcr.io/baldwinspc/charts/halo-operator --version ${ver} --namespace halo-system --create-namespace"
             echo '```'
             echo
             echo "**Standalone** — \`halo-linux-amd64\` for a Halo, \`halo-linux-arm64\` for arm64 hosts. No Kubernetes needed:"
@@ -214,8 +246,9 @@ jobs:
             echo
             echo "Verify downloads with \`sha256sum -c SHA256SUMS\`."
             echo
-            echo "**Pulling the image.** This repository is private, so its ghcr package is too. A cluster needs an"
-            echo "image pull secret with \`read:packages\` (set \`imagePullSecrets\` in the chart values)."
+            echo "**Pulling.** This repository is private, so its ghcr packages (the image and the chart) are too. A cluster"
+            echo "needs an image pull secret with \`read:packages\` (set \`imagePullSecrets\` in the chart values), and helm"
+            echo "needs \`helm registry login ghcr.io\` to pull the chart."
           } > notes.md
           gh release create "${GITHUB_REF_NAME}" dist/* \
             --title "AMD Halo Operator ${ver}" --notes-file notes.md --verify-tag
