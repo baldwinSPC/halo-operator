@@ -20,17 +20,28 @@ Implementation is tracked on this repository's issues.
 
 The hardest-won knowledge in the Strix Halo community is not the GPU stack —
 that works today with AMD's operator (`driver.enable: false` plus an NFD rule).
-It is **node configuration**: kernel args (`amd_iommu=off`,
-`amdgpu.gttsize`, `ttm.pages_limit`), a kernel-version floor, linux-firmware
-pins where one release breaks ROCm and the next fixes it, and whether Vulkan or
-ROCm is the right backend for a given workload. Today that lives in wiki pages
-and is applied by hand, drifts silently, and is discovered when a node is slow
-rather than when it is wrong.
+It is **node configuration**: GTT sizing (`ttm.pages_limit`), the inbox amdgpu
+rather than `amdgpu-dkms`, a kernel-version floor, firmware where one release
+breaks ROCm and the next fixes it, a boot that actually completes on a
+headless unit, and whether a node exposes what ROCm and Vulkan each need.
 
-No GPU operator models any of it, in any vendor's design — the NVIDIA analogue
-is DGX Spark Enterprise Manageability, a different product category. That gap is
-what this reconciles, and it is why the components below are all
-*verification and policy* rather than workload plumbing.
+**AMD now ships tools that *set* part of this on one host.** `amd-smi set --gtt`
+(ROCm 7.13 and later) and `amd-ttm` (amd-debug-tools 0.2.18 and later) write
+the `ttm` option to `/etc/modprobe.d` and rebuild the initramfs, and amd-smi
+shows a value pending a reboot. Where they are installed, use them to make the
+change. What neither does is **verify** it: they rebuild one kernel's image
+(`update-initramfs -u` targets the newest), never check the image they built,
+ignore the systemd-boot copies on the EFI system partition, and treat a failed
+rebuild as a warning. That is exactly how amd-halo came to boot one of its
+kernels at the default GTT with every tool reporting success (#20).
+
+GPU operators model the *shape* of node configuration — AMD's `DeviceConfig`
+has kernel-module parameters and a driver upgrade policy that cordons, drains
+and reboots, and NVIDIA's `ClusterPolicy` has `driver.kernelModuleConfig` —
+but for the driver those operators install. **No operator declares and
+verifies an APU node's memory, boot and stack configuration across a fleet**,
+which is what this one does, and why every component below is *verification
+and policy* rather than workload plumbing.
 
 ## API
 
@@ -42,6 +53,13 @@ component stanzas:
 | `memoryPolicy` | Verification only — observes kernel args and effective GTT, reports drift; **never mutates the host** (the standalone binary's `apply -execute` is the one opt-in exception, see below) |
 | `runtimeProfile` | Verification only — observes whether every node exposes what each declared backend needs from the kernel (a DRM render node for Vulkan; that and a KFD GPU agent for ROCm), plus a catalogue of validated runtime images per backend. It does **not** choose a backend: which one is faster flips per model and per phase, so that is the workload's choice |
 | `healthChecks` | Probes for the documented APU failure modes (clock-under-load, permission-fault, queue-create) |
+| `stackPolicy` | Verification only — the inbox amdgpu rather than `amdgpu-dkms` (on by default: AMD closed ROCm#6186 and #6118 as caused by DKMS on an APU), an optional kernel floor, and a known-bad list for GPU firmware (`fw_version` blocks and the VBIOS). Two conditions: `StackCompliant` and `GPUFirmwareCompliant`. The system BIOS is not here (#36) |
+
+The boot hold is not a stanza but an observation: `BootHoldCleared` says
+whether `splash` still holds every headless boot, `False` with reason
+`RebootPending` once the files are clean and only a restart is outstanding.
+Reading the boot loader entries needs root, so it is opt-in
+(`agent.readBootEntries`); without it the condition stays `Unknown`.
 
 Upstream owns the rest. `devicePlugin`, `labeller` and `metricsExporter` were
 specified here in the first draft and were removed once it was clear they are
@@ -56,6 +74,11 @@ reading. See the next section.
 Status reports per-component state with three-valued semantics — a
 component is `Ready`, `Degraded`, or `NotObserved`; absence of information
 is never rendered as "off" — and every observation carries a timestamp.
+`status.nodes` gives the same per node, with the time its reading was taken,
+so a fleet reader can name which nodes drifted and which went unread (bounded
+at 256, the ones that need attention first). A memory-policy value declared in
+`/etc/modprobe.d` but not yet in effect is still drift, with reason
+`RebootPending` rather than `Drifted`.
 
 See [config/samples/](config/samples/) for an example resource.
 
@@ -148,15 +171,13 @@ that ABI is no longer a guess:
   **no** star on any level — a starless ladder is a real format, and the parser
   reports the current clock as unread rather than inventing one.
 
-The runtime profile's two reads are not equally settled. **KFD's topology was
-read on the unit** (2026-09-14, unprivileged): node 0 is the CPU at
-`gfx_target_version` 0 and node 1 the GPU at 110501, gfx1151. **The render
-node's location is inferred, not yet read**: the agent lists the PCI device's
-own `drm` directory, which is where the kernel registers a device's DRM minors
-and where `/sys/class/drm/card0` resolves, and `/dev/dri/renderD128` is
-present on the unit, but nobody has listed that directory on it. If the layout
-differs, the reading is *not observed* and the backends `Unknown`, never
-unavailable.
+**The newer reads were confirmed on the unit on 2026-10-06**, all
+unprivileged: the PCI device's own `drm/` directory lists `renderD128`; KFD's
+topology lists the CPU at `gfx_target_version` 0 and the GPU at 110501
+(gfx1151), with `mem_banks` equal to `mem_info_gtt_total`; every file in the
+device's `fw_version/` directory (MES `0x00000088` among them) and
+`vbios_version` are mode 0444; and `/sys/module/amdgpu/taint` is empty, the
+inbox driver. The iGPU's PCI ID is `1002:1586`.
 
 The collector is strict on purpose: any deviation from the documented formats
 is reported as *not observed*, never guessed at. `/agent --once` exists for
@@ -164,16 +185,14 @@ bring-up.
 
 Two things stay unvalidated, and hardware arriving did not settle either:
 
-- **The kernel-log probes have no reader.** `permission-fault` and
-  `queue-create` count dmesg lines whose exact formats are hardware facts;
-  an unvalidated pattern that matches nothing would report "0 faults" — a
-  clean bill of health nobody measured. The unit on hand has never emitted
-  one of these faults, so there is nothing to validate a pattern *against*:
-  this is blocked by the absence of a failure, not by the absence of
-  hardware. Until the patterns are validated those counters are never
-  published, the probes report `NotObserved`, and a config using the default
-  probe set holds `NodesHealthy` at `Unknown`. Scope `healthChecks.probes` to
-  `[clock-under-load]` if you want that condition decidable today.
+- **The kernel-log probes rest on other units' faults, not this one's.**
+  `permission-fault` and `queue-create` match amdgpu's own format strings for
+  gfx11.5 (`gmc_v11_0.c`, `gfxhub_v11_5_0.c`), checked against the dmesg real
+  gfx1151 units logged in ROCm#6186 and #6118. Our unit has never faulted, so
+  nothing here has matched a fault it produced. Reading the log needs
+  `CAP_SYSLOG` (the platform sets `kernel.dmesg_restrict=1`), so it is opt-in
+  (`agent.readKernelLog`); without it those probes report `NotObserved` and a
+  config using the default probe set holds `NodesHealthy` at `Unknown`.
 - **Multi-GPU nodes are not chosen between.** With more than one
   amdgpu-driven device the agent publishes no counters rather than silently
   picking one. The available unit is single-GPU, so this is still unsettled.
@@ -182,9 +201,9 @@ The claim made here is narrow and deliberate. The agent's *reads* are
 confirmed on a physical gfx1151, and so is the *judgement*: run through the
 standalone binary (below), which shares every decision function with the
 controller, both `memory-policy` and `health-checks` reach `Ready` against the
-physical unit for a policy matching what the platform configures
-(`runtime-profile` is newer than that run and has not yet been judged against
-the unit). What has not
+physical unit for a policy matching what the platform configures (the
+components added since have been read on the unit but not yet judged there by
+a released build). What has not
 happened yet is a condition reaching `True` on a node **under Kubernetes
 management** — which is what issues #4/#5 ask for, so they remain open until
 the node joins a cluster.
@@ -211,6 +230,19 @@ functions; the only thing removed is the round trip through an API server. A
 test feeds the same readings down both paths and fails the build if any
 component state differs, and that test is itself checked by breaking one side
 and confirming it goes red.
+
+`halo check` also makes three checks the cluster path cannot. It reads its
+`/etc` and ESP under `-root`, so a check pointed at a fixture tree never
+samples the machine running it.
+
+- **`boot-completed`** (#11) reads `systemctl is-system-running`. A boot still
+  `starting` after `-boot-grace` (15m) is drift, naming what it waits on; on
+  amd-halo that was `plymouth-quit-wait.service`, for 26 hours, with nothing
+  failed. `degraded` counts as booted.
+- **`boot-hold`** (#13), as root, decides whether `splash` still holds the
+  next headless boot.
+- As root it also reads the **kernel log**, so the default health probes
+  become decidable.
 
 Exit codes carry the three-valued answer all the way out, so a script or a
 cron job can never read "could not tell" as "fine":
@@ -347,7 +379,9 @@ The result is one statically linked binary at `bin/halo`; copy it to the node.
 
 ## Installing
 
-Requires Kubernetes 1.29 or newer.
+Requires Kubernetes 1.30 or newer for the default install: the admission
+policy that pins each node's observation to that node
+(`agent.pinObservationNames`) needs it. On 1.29, set that value to `false`.
 
 **From a release** (recommended). Each release on GitHub carries the chart
 already pinned to its image **by digest**, so the version it names is the
@@ -383,7 +417,13 @@ the render rather than the pull),
 agent is on by default (`agent.enabled`), runs on nodes matching
 `agent.nodeSelector` (the NFD AMD GPU label), and publishes every
 `agent.interval` (1m); disabling it does not fake anything — conditions fall
-back to `Unknown`. The image carries both `/manager` and `/agent`; `make
+back to `Unknown`. **AMD's NFD rule does not yet recognise the Strix Halo iGPU
+(`1002:1586`)**, so on most clusters that label never appears: set
+`agent.nodeSelector`, and the `HaloDeviceConfig`'s `nodeSelector`, to a label
+your Halo nodes do carry. Two opt-ins widen what the agent reads, each by one
+privilege: `agent.readBootEntries` (runs it as uid 0, to read the root-only
+boot loader entries) and `agent.readKernelLog` (adds `CAP_SYSLOG`, to count
+GPU faults). The image carries both `/manager` and `/agent`; `make
 image` builds it locally.
 
 ## Developing
