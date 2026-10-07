@@ -87,6 +87,12 @@ spec:
         - name: sys
           mountPath: /host/sys
           readOnly: true
+        # Declared module options, read as the intent the running values are
+        # compared against, so a value staged but not yet booted reads as
+        # RebootPending (#31).
+        - name: etc-modprobe
+          mountPath: /host/etc/modprobe.d
+          readOnly: true
         {{- if .Values.agent.readBootEntries }}
         # The boot hold's PERSISTED sources. Read-only, and the operator never
         # writes them: removing `splash` is Glimmer's signed-task path.
@@ -113,6 +119,10 @@ spec:
       - name: sys
         hostPath:
           path: /sys
+          type: Directory
+      - name: etc-modprobe
+        hostPath:
+          path: /etc/modprobe.d
           type: Directory
       {{- if .Values.agent.readBootEntries }}
       - name: etc-kernel

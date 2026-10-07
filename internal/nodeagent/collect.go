@@ -82,6 +82,9 @@ type Reading struct {
 	FirmwareVersions map[string]string
 	// VBIOSVersion is the device's vbios_version.
 	VBIOSVersion *string
+	// ModprobeOptions is every /etc/modprobe.d options line for the modules
+	// in moduleParamModules, verbatim.
+	ModprobeOptions []string
 	// BootHold is the persisted boot configuration — /etc/kernel/cmdline and
 	// the Boot Loader Specification entries — which decides the NEXT boot.
 	// KernelCmdline above is the running one.
@@ -166,6 +169,12 @@ func (c Collector) Collect() Reading {
 	if etcRoot == "" {
 		etcRoot = "/etc"
 	}
+	opts, msg := readModprobeOptions(filepath.Join(etcRoot, "modprobe.d"))
+	if msg != "" {
+		r.Messages = append(r.Messages, msg)
+	}
+	r.ModprobeOptions = opts
+
 	espRoot := c.ESPRoot
 	if espRoot == "" {
 		espRoot = "/efi"
@@ -546,6 +555,38 @@ func readFirmwareVersions(dev string) (map[string]string, string) {
 		return nil, "firmware: the fw_version directory holds no readable entry"
 	}
 	return out, ""
+}
+
+// readModprobeOptions returns every `options` line for a module whose
+// parameters this agent reads, from dir/*.conf in name order, which is the
+// order modprobe reads them. Only /etc/modprobe.d is read: it is where an
+// administrator, and the platform's own ttm-config, put these settings.
+func readModprobeOptions(dir string) ([]string, string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Sprintf("modprobe.d: %v", err)
+	}
+	modules := map[string]bool{}
+	for _, m := range moduleParamModules {
+		modules[m] = true
+	}
+	var lines []string
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".conf") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 3 && fields[0] == "options" && modules[fields[1]] {
+				lines = append(lines, strings.TrimSpace(line))
+			}
+		}
+	}
+	return lines, ""
 }
 
 // readSysfsInt64 reads a sysfs attribute holding one non-negative integer.

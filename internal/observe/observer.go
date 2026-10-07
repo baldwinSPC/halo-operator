@@ -105,6 +105,7 @@ func MemoryObservation(node string, spec *halov1alpha1.HaloNodeObservationSpec) 
 	// stays nil so "no module directory was readable" does not arrive as
 	// "read fine, nothing set".
 	obs.ModuleParams = aliasDKMSTTM(spec.ModuleParams, spec.TTMModule)
+	obs.StagedModuleParams = aliasDKMSTTM(memorypolicy.ParseModprobeOptions(spec.ModprobeOptions), spec.TTMModule)
 	obs.EffectiveGPUMemoryGiB = gibFloor(spec.GTTTotalBytes)
 	return obs
 }

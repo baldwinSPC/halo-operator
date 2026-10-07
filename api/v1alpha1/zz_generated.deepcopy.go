@@ -320,6 +320,11 @@ func (in *HaloNodeObservationSpec) DeepCopyInto(out *HaloNodeObservationSpec) {
 		*out = new(string)
 		**out = **in
 	}
+	if in.ModprobeOptions != nil {
+		in, out := &in.ModprobeOptions, &out.ModprobeOptions
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.PermissionFaults != nil {
 		in, out := &in.PermissionFaults, &out.PermissionFaults
 		*out = new(int32)

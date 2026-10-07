@@ -92,6 +92,11 @@ func evaluateMemoryPolicy(
 		status.State = halov1alpha1.ComponentDegraded
 		condition.Status = metav1.ConditionFalse
 		condition.Reason = "Drifted"
+		if summary.RebootPending {
+			// Still False: a staged value is not in effect. The reason says
+			// the remedy is a reboot, not a configuration change.
+			condition.Reason = "RebootPending"
+		}
 		if detail := firstDriftDetail(findings); detail != "" {
 			condition.Message = summary.Message + ": " + detail
 			status.Message = condition.Message

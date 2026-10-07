@@ -64,6 +64,7 @@ func newFixture(t *testing.T) *fixture {
 	// The inbox amdgpu declares no taint, and the firmware is the unit's own,
 	// read 2026-10-06.
 	f.writeFile(filepath.Join(f.sysRoot, "module", "amdgpu", "taint"), "\n")
+	f.writeFile(filepath.Join(f.etcRoot, "modprobe.d", "ttm.conf"), "options ttm pages_limit=32505856\n")
 	f.writeFile(filepath.Join(f.device("0000:c5:00.0"), "vbios_version"), "113-STRXLGEN-001\n")
 	for name, version := range fixtureFirmware {
 		f.writeFile(filepath.Join(f.device("0000:c5:00.0"), "fw_version", name+"_fw_version"), version+"\n")
@@ -726,3 +727,24 @@ func TestCollectSaysNothingAboutAbsentDKMSModules(t *testing.T) {
 		}
 	}
 }
+
+// The declared options for the governed modules are carried verbatim, in
+// file order; other modules and comments are not.
+func TestCollectReadsDeclaredModprobeOptions(t *testing.T) {
+	f := newFixture(t)
+	f.writeFile(filepath.Join(f.etcRoot, "modprobe.d", "00-amdgpu.conf"),
+		"# a comment\noptions amdgpu gttsize=126976\nblacklist nouveau\noptions snd_hda_intel power_save=0\n")
+	f.writeFile(filepath.Join(f.etcRoot, "modprobe.d", "README"), "options ttm pages_limit=1\n")
+
+	r := f.collector().Collect()
+	want := []string{"options amdgpu gttsize=126976", "options ttm pages_limit=32505856"}
+	if len(r.ModprobeOptions) != len(want) {
+		t.Fatalf("ModprobeOptions = %q, want %q", r.ModprobeOptions, want)
+	}
+	for i := range want {
+		if r.ModprobeOptions[i] != want[i] {
+			t.Errorf("ModprobeOptions[%d] = %q, want %q", i, r.ModprobeOptions[i], want[i])
+		}
+	}
+}
+

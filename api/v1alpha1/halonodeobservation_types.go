@@ -140,6 +140,16 @@ type HaloNodeObservationSpec struct {
 	// +optional
 	VBIOSVersion *string `json:"vbiosVersion,omitempty"`
 
+	// ModprobeOptions is every `options` line in /etc/modprobe.d/*.conf for
+	// the modules whose parameters are read above, verbatim, in the order
+	// modprobe reads the files. It is the declared intent the running values
+	// are compared against, so a value staged on disk but not yet in effect
+	// reads as RebootPending rather than as unconfigured (#31). It is evidence
+	// for the reason, never the verdict: modprobe.d is not what the running
+	// kernel has. Absent when nothing was read or nothing is declared.
+	// +optional
+	ModprobeOptions []string `json:"modprobeOptions,omitempty"`
+
 	// PermissionFaults counts PERMISSION_FAULT kernel-log entries in the
 	// agent's sampling window.
 	//

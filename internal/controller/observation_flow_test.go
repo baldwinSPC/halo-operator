@@ -104,6 +104,7 @@ func haloNodeFixture(t *testing.T) nodeagent.Collector {
 	etcRoot := filepath.Join(filepath.Dir(procRoot), "etc")
 	espRoot := filepath.Join(filepath.Dir(procRoot), "efi")
 	write(filepath.Join(etcRoot, "kernel", "cmdline"), "root=/dev/nvme0n1p2 quiet\n")
+	write(filepath.Join(etcRoot, "modprobe.d", "ttm.conf"), "options ttm pages_limit=32505856\n")
 	write(filepath.Join(espRoot, "loader", "entries", "fixture.conf"),
 		"title Fixture\noptions     root=/dev/nvme0n1p2 quiet\n")
 	return nodeagent.Collector{ProcRoot: procRoot, SysRoot: sysRoot, EtcRoot: etcRoot, ESPRoot: espRoot}
@@ -249,6 +250,34 @@ func TestObservedDriftReachesFalseWithTheParameterNamed(t *testing.T) {
 	}
 	if !strings.Contains(memory.Message, "amd_iommu") {
 		t.Errorf("the condition does not name the drifted parameter: %q", memory.Message)
+	}
+}
+
+// TestStagedValueIsRebootPending is #31 through the shipped pipe: amd-halo as
+// delivered declared pages_limit in /etc/modprobe.d while the running kernel
+// had the default. The verdict stays False, since a staged value is not in
+// effect, but the reason is RebootPending, not plain drift.
+func TestStagedValueIsRebootPending(t *testing.T) {
+	requireEnvtest(t)
+
+	collector := haloNodeFixture(t)
+	if err := os.WriteFile(filepath.Join(collector.ProcRoot, "cmdline"),
+		[]byte("BOOT_IMAGE=/vmlinuz amd_iommu=off amdgpu.gttsize=126976 quiet\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(collector.SysRoot, "module", "ttm", "parameters", "pages_limit"),
+		[]byte("16395970\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	node := createAMDNode(t, "flow-staged")
+	collectAndPublish(t, collector, node.Name, metav1.Now())
+	createConfig(t, "flow-staged-cfg", haloPolicy())
+
+	got := reconcileOnce(t, observingReconciler(), "flow-staged-cfg")
+	memory := conditionOf(got, halov1alpha1.ConditionMemoryPolicyCompliant)
+	if memory == nil || memory.Status != metav1.ConditionFalse || memory.Reason != "RebootPending" {
+		t.Fatalf("MemoryPolicyCompliant = %+v, want False with reason RebootPending", memory)
 	}
 }
 
