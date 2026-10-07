@@ -280,7 +280,6 @@ func TestCheckBootImagesAsRoot(t *testing.T) {
 	})
 }
 
-
 // TestCheckReportsTheBootHold: as root, check reads the loader entries and
 // reports a unit that still holds every headless boot on `splash` (#13) as
 // drift, naming the file. Unprivileged, it says it skipped them.
@@ -321,4 +320,3 @@ func TestCheckDoesNotJudgeThisMachinesBoot(t *testing.T) {
 		t.Errorf("a fixture-root check did not skip the boot-completed check:\n%s", out)
 	}
 }
-

@@ -113,8 +113,8 @@ func RenderInspect(w io.Writer, node string, spec halov1alpha1.HaloNodeObservati
 	fmt.Fprintln(w)
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "kernel-log counters\t")
-	fmt.Fprintf(tw, "  permission faults\t%s\n", countOrAbsent(spec.PermissionFaults, "no validated kernel-log reader yet"))
-	fmt.Fprintf(tw, "  queue-create failures\t%s\n", countOrAbsent(spec.QueueCreateFailures, "no validated kernel-log reader yet"))
+	fmt.Fprintf(tw, "  permission faults\t%s\n", countOrAbsent(spec.PermissionFaults, "kernel log not read (needs root)"))
+	fmt.Fprintf(tw, "  queue-create failures\t%s\n", countOrAbsent(spec.QueueCreateFailures, "kernel log not read (needs root)"))
 	tw.Flush()
 
 	if len(spec.Messages) > 0 {
@@ -195,8 +195,8 @@ func describeParam(p ParamLine) string {
 }
 
 // healthHint says the one useful thing when health is undecidable only
-// because of the kernel-log probes, which have no validated reader: scoping
-// the probes makes the condition decidable today.
+// because of the kernel-log probes: their counts need the kernel log, which
+// is readable only as root on a host with kernel.dmesg_restrict=1.
 func healthHint(c ComponentReport) string {
 	if c.Name != "health-checks" || c.State != halov1alpha1.ComponentNotObserved {
 		return ""
@@ -215,8 +215,8 @@ func healthHint(c ComponentReport) string {
 		return ""
 	}
 	sort.Strings(blocked)
-	return fmt.Sprintf("%s have no validated kernel-log reader, so they can never be observed yet; "+
-		"set healthChecks.probes to [clock-under-load] to make health decidable today",
+	return fmt.Sprintf("%s count faults in the kernel log, which is read only as root here "+
+		"(kernel.dmesg_restrict); run check as root, or set healthChecks.probes to [clock-under-load]",
 		strings.Join(blocked, " and "))
 }
 

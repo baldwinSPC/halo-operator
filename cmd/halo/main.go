@@ -92,6 +92,10 @@ var (
 	isSystemdHost = standalone.IsSystemdHost
 )
 
+// newKernelLogReader is what root runs on the real host read the kernel log
+// with — a variable so no test reads the log of the machine running it.
+var newKernelLogReader = func() nodeagent.KernelLogReader { return nodeagent.SyslogReader{} }
+
 // newBootImageReader is what check reads boot images with — a variable so
 // tests can supply images without a node's initramfs tooling.
 var newBootImageReader = func(root string) standalone.BootImageReader {
@@ -158,12 +162,19 @@ func parse(fs *flag.FlagSet, args []string) (int, bool) {
 // read takes one reading. /etc and the ESP are read under root, so a check
 // pointed at a fixture tree never samples the machine running it.
 func read(c common, root string) halov1alpha1.HaloNodeObservationSpec {
-	reading := nodeagent.Collector{
+	collector := nodeagent.Collector{
 		ProcRoot: c.procRoot,
 		SysRoot:  c.sysRoot,
 		EtcRoot:  filepath.Join(root, "etc"),
 		ESPRoot:  filepath.Join(root, "efi"),
-	}.Collect()
+	}
+	// As root on the real host the kernel log is readable, so the fault
+	// probes can be decided; on a fixture tree it would describe this
+	// machine, not the tree, so it is left unread.
+	if root == "/" && geteuid() == 0 {
+		collector.KernelLog = newKernelLogReader()
+	}
+	reading := collector.Collect()
 	return nodeagent.SpecFromReading(reading, metav1.Now())
 }
 

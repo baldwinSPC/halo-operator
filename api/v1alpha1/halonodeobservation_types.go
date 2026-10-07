@@ -150,20 +150,23 @@ type HaloNodeObservationSpec struct {
 	// +optional
 	ModprobeOptions []string `json:"modprobeOptions,omitempty"`
 
-	// PermissionFaults counts PERMISSION_FAULT kernel-log entries in the
-	// agent's sampling window.
+	// PermissionFaults counts GPU page faults whose status carries
+	// PERMISSION_FAULTS in the agent's kernel-log window (ROCm#6186's storm).
 	//
-	// No reader sets this yet. The kernel-log line formats are hardware facts
-	// to be read off a physical gfx1151 unit, and an unvalidated pattern that
-	// matches nothing would report "0 faults" — a clean bill of health this
-	// operator has no grounds to issue. Until the patterns are validated the
-	// field stays absent and the probe correctly reports NotObserved.
+	// Read only when the agent is given CAP_SYSLOG (agent.readKernelLog in the
+	// chart): amd-halo runs with kernel.dmesg_restrict=1. Without it the field
+	// is absent and the probe reports NotObserved, never a counted zero. The
+	// pattern is amdgpu's own format string for gfx11.5, checked against the
+	// dmesg real gfx1151 units logged in ROCm#6186 and #6118. The kernel
+	// rate-limits these prints, so a count is a lower bound.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	PermissionFaults *int32 `json:"permissionFaults,omitempty"`
 
-	// QueueCreateFailures counts KFD queue-creation failures in the agent's
-	// sampling window. Absent for the same reason as PermissionFaults.
+	// QueueCreateFailures counts GPU page faults from the CPF client, the
+	// command processor fetching a queue, in the same window: the fault
+	// hsa_queue_create triggers in ROCm#6118. Absent for the same reason as
+	// PermissionFaults.
 	// +optional
 	// +kubebuilder:validation:Minimum=0
 	QueueCreateFailures *int32 `json:"queueCreateFailures,omitempty"`

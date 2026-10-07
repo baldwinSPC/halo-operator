@@ -101,6 +101,13 @@ agent:
   # default: BootHoldCleared then stays Unknown, which is the honest answer
   # for an unread file. The two mounts must exist on every targeted node.
   readBootEntries: false
+  # -- Read the kernel log for the GPU page faults the permission-fault and
+  # queue-create probes count. On a host with kernel.dmesg_restrict=1, as the
+  # AMD Ryzen AI Developer Platform has, that needs CAP_SYSLOG, which this
+  # adds to the agent and nothing else. The log is read with syslog(2), so no
+  # device is mounted. Off by default: those two probes then report
+  # NotObserved, and NodesHealthy with the default probe set stays Unknown.
+  readKernelLog: false
   # -- Nodes to observe. The default is the label Node Feature Discovery
   # applies to AMD GPU nodes via the rule AMD's GPU Operator installs, which
   # is also what an empty HaloDeviceConfig nodeSelector targets.

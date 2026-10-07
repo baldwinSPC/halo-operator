@@ -574,3 +574,23 @@ func TestAgentReadsBootEntriesOnlyWhenAskedTo(t *testing.T) {
 		t.Errorf("%d hostPath volumes but only %d read-only mounts", hostPaths, ro)
 	}
 }
+
+// TestAgentReadsTheKernelLogOnlyWhenAskedTo pins #5's privilege: CAP_SYSLOG,
+// added only by opt-in, and nothing else with it.
+func TestAgentReadsTheKernelLogOnlyWhenAskedTo(t *testing.T) {
+	plain := documentOfKind(t, render(t), "DaemonSet")
+	if strings.Contains(plain, "SYSLOG") || strings.Contains(plain, "--kernel-log") {
+		t.Errorf("the default DaemonSet reads the kernel log; it must be opt-in:\n%s", plain)
+	}
+	opted := documentOfKind(t, render(t, "--set", "agent.readKernelLog=true"), "DaemonSet")
+	for _, want := range []string{"- SYSLOG", "- --kernel-log", "- ALL", "runAsNonRoot: true"} {
+		if !strings.Contains(opted, want) {
+			t.Errorf("the opted-in DaemonSet is missing %q:\n%s", want, opted)
+		}
+	}
+	for _, forbidden := range []string{"privileged: true", "/dev/kmsg", "runAsUser: 0"} {
+		if strings.Contains(opted, forbidden) {
+			t.Errorf("reading the kernel log brought %q with it", forbidden)
+		}
+	}
+}

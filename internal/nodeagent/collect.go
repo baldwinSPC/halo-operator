@@ -41,6 +41,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Reading is everything one collection pass produced. Absent fields are nil;
@@ -89,6 +90,12 @@ type Reading struct {
 	// the Boot Loader Specification entries — which decides the NEXT boot.
 	// KernelCmdline above is the running one.
 	BootHold *BootHoldReading
+	// PermissionFaults counts GPU page faults with PERMISSION_FAULTS set in
+	// the kernel log window.
+	PermissionFaults *int32
+	// QueueCreateFailures counts GPU page faults from the CPF client, the
+	// command processor fetching a queue, in the kernel log window.
+	QueueCreateFailures *int32
 	// Messages explains every nil above.
 	Messages []string
 }
@@ -104,6 +111,13 @@ type Collector struct {
 	// EtcRoot is where the host's /etc is visible, "/etc" by default. Only
 	// <EtcRoot>/kernel/cmdline is ever read.
 	EtcRoot string
+	// KernelLog, when set, is read for the two GPU fault signatures the
+	// permission-fault and queue-create probes count. Nil leaves both counts
+	// absent, which those probes report as not observed, never as zero.
+	KernelLog KernelLogReader
+	// KernelLogWindow is how far back faults count. Zero means
+	// DefaultKernelLogWindow.
+	KernelLogWindow time.Duration
 	// ESPRoot is where the host's EFI system partition is visible, "/efi" by
 	// default. Only <ESPRoot>/loader/entries is ever listed.
 	//
@@ -245,11 +259,26 @@ func (c Collector) Collect() Reading {
 		r.VBIOSVersion = &v
 	}
 
-	// PermissionFaults and QueueCreateFailures are deliberately not collected.
-	// They come from the kernel log, and the line formats to match are
-	// hardware facts pending a physical gfx1151 unit; an unvalidated pattern
-	// that matches nothing would count zero faults, which reads as a healthy
-	// node. Absent readings keep those probes honestly NotObserved.
+	// The kernel-log counters are read only when a reader is configured: it
+	// needs CAP_SYSLOG, which the agent holds only by opt-in. Without one they
+	// stay absent and the probes stay NotObserved, never a counted zero.
+	if c.KernelLog != nil {
+		window := c.KernelLogWindow
+		if window <= 0 {
+			window = DefaultKernelLogWindow
+		}
+		buf, err := c.KernelLog.Read()
+		now, nowErr := c.KernelLog.Now()
+		switch {
+		case err != nil:
+			r.Messages = append(r.Messages, fmt.Sprintf("kernel log: %v", err))
+		case nowErr != nil:
+			r.Messages = append(r.Messages, fmt.Sprintf("kernel log: the clock could not be read: %v", nowErr))
+		default:
+			permission, queue := countFaults(buf, now, window)
+			r.PermissionFaults, r.QueueCreateFailures = &permission, &queue
+		}
+	}
 
 	return r
 }

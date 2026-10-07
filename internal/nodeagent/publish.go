@@ -99,8 +99,8 @@ func SpecFromReading(r Reading, at metav1.Time) halov1alpha1.HaloNodeObservation
 		VBIOSVersion:        r.VBIOSVersion,
 		ModprobeOptions:     r.ModprobeOptions,
 		Messages:            r.Messages,
-		PermissionFaults:    nil, // no validated kernel-log reader yet; see the spec comments
-		QueueCreateFailures: nil,
+		PermissionFaults:    r.PermissionFaults,
+		QueueCreateFailures: r.QueueCreateFailures,
 	}
 }
 

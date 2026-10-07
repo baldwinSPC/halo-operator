@@ -53,6 +53,9 @@ spec:
         - --etc-root=/host/etc
         - --esp-root=/host/efi
         - --interval={{ .Values.agent.interval }}
+        {{- if .Values.agent.readKernelLog }}
+        - --kernel-log
+        {{- end }}
         {{- with .Values.agent.extraArgs }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -68,6 +71,14 @@ spec:
                  so owner permission is enough and no capability is added. */}}
           {{- $_ := set $sc "runAsUser" 0 }}
           {{- $_ := set $sc "runAsNonRoot" false }}
+          {{- end }}
+          {{- if .Values.agent.readKernelLog }}
+          {{- /* syslog(2) with kernel.dmesg_restrict=1 needs CAP_SYSLOG, and
+                 the runtime's default seccomp profile admits syslog only with
+                 it. Everything else stays dropped. */}}
+          {{- $caps := deepCopy (default (dict) $sc.capabilities) }}
+          {{- $_ := set $caps "add" (list "SYSLOG") }}
+          {{- $_ := set $sc "capabilities" $caps }}
           {{- end }}
           {{- toYaml $sc | nindent 10 }}
         resources:
