@@ -410,3 +410,21 @@ func ParseModprobeOptions(lines []string) map[string]string {
 	}
 	return out
 }
+
+// deprecatedParams maps a deprecated parameter to its replacement. The kernel
+// says so itself: amdgpu_ttm_init warns "Configuring gttsize via module
+// parameter is deprecated, please use ttm.pages_limit".
+var deprecatedParams = map[string]string{"amdgpu.gttsize": "ttm.pages_limit"}
+
+// DeprecationNote names every deprecated parameter a policy declares and its
+// replacement, or returns "" when there is none. It is a note, not a verdict:
+// a declared parameter is still checked, because it may still be in effect.
+func DeprecationNote(policy Policy) string {
+	var notes []string
+	for _, name := range sortedKeys(policy.ExpectedKernelArgs) {
+		if replacement, ok := deprecatedParams[name]; ok {
+			notes = append(notes, fmt.Sprintf("%s is deprecated by the kernel; declare %s instead", name, replacement))
+		}
+	}
+	return strings.Join(notes, "; ")
+}

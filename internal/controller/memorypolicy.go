@@ -106,6 +106,10 @@ func evaluateMemoryPolicy(
 		condition.Status = metav1.ConditionUnknown
 		condition.Reason = "NotObserved"
 	}
+	if note := memorypolicy.DeprecationNote(policy); note != "" {
+		condition.Message += " (note: " + note + ")"
+		status.Message = condition.Message
+	}
 	return status, condition
 }
 

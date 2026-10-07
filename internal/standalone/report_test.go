@@ -6,6 +6,7 @@ package standalone
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	halov1alpha1 "github.com/baldwinSPC/halo-operator/api/v1alpha1"
@@ -282,5 +283,17 @@ func TestExitNoPermIsNotAVerdict(t *testing.T) {
 		if ExitNoPerm == v {
 			t.Errorf("ExitNoPerm (%d) collides with %d", ExitNoPerm, v)
 		}
+	}
+}
+
+func TestDeprecatedParameterIsWarnedAbout(t *testing.T) {
+	r := Evaluate("n", amdHaloSpec(), config(halov1alpha1.HaloDeviceConfigSpec{
+		MemoryPolicy: halov1alpha1.MemoryPolicySpec{ExpectedKernelArgs: map[string]string{"amdgpu.gttsize": "126976"}}}))
+	found := false
+	for _, w := range r.Warnings {
+		found = found || strings.Contains(w, "deprecated")
+	}
+	if !found {
+		t.Errorf("warnings %q do not mention the deprecated gttsize", r.Warnings)
 	}
 }

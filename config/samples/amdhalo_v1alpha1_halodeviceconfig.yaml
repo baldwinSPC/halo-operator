@@ -6,9 +6,10 @@ metadata:
   name: default
 spec:
   memoryPolicy:
+    # GTT is sized by ttm.pages_limit (pages, here 124 GiB on 4 KiB pages).
+    # amdgpu.gttsize is deprecated by the kernel; don't declare it.
     expectedKernelArgs:
       amd_iommu: "off"
-      amdgpu.gttsize: "126976"
       ttm.pages_limit: "32505856"
     minEffectiveGPUMemoryGiB: 100
   runtimeProfile:

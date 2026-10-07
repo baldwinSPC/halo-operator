@@ -149,7 +149,6 @@ func TestCRDAcceptsTheSample(t *testing.T) {
 		MemoryPolicy: halov1alpha1.MemoryPolicySpec{
 			ExpectedKernelArgs: map[string]string{
 				"amd_iommu":       "off",
-				"amdgpu.gttsize":  "126976",
 				"ttm.pages_limit": "32505856",
 			},
 			MinEffectiveGPUMemoryGiB: 100,

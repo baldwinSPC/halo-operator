@@ -15,7 +15,12 @@ type MemoryPolicySpec struct {
 	// +optional
 	Enabled *bool `json:"enabled,omitempty"`
 	// ExpectedKernelArgs maps kernel parameters to their expected values
-	// (e.g. "amdgpu.gttsize", "ttm.pages_limit", "amd_iommu").
+	// (e.g. "ttm.pages_limit", "amd_iommu"). Module parameters such as
+	// ttm.pages_limit are checked against the running value too, so one set
+	// through /etc/modprobe.d is found. Size GTT with ttm.pages_limit:
+	// amdgpu.gttsize is deprecated by the kernel ("Configuring gttsize via
+	// module parameter is deprecated, please use ttm.pages_limit"), and a
+	// policy that declares it is still checked but reported with a note.
 	// +optional
 	ExpectedKernelArgs map[string]string `json:"expectedKernelArgs,omitempty"`
 	// MinEffectiveGPUMemoryGiB is the floor for GTT-visible GPU memory; a

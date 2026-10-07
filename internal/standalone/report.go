@@ -160,6 +160,9 @@ func Evaluate(node string, spec halov1alpha1.HaloNodeObservationSpec, cfg halov1
 	resolved := cfg.Spec.WithDefaults()
 	r := Report{Node: node, ObservedAt: spec.ObservedAt.Time, Messages: spec.Messages}
 
+	if note := memorypolicy.DeprecationNote(observe.MemoryPolicy(resolved.MemoryPolicy)); note != "" {
+		r.Warnings = append(r.Warnings, note)
+	}
 	if len(cfg.Spec.NodeSelector) > 0 {
 		r.Warnings = append(r.Warnings,
 			"spec.nodeSelector is ignored in standalone mode: there is exactly one node, and it is this one")

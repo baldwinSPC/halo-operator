@@ -747,4 +747,3 @@ func TestCollectReadsDeclaredModprobeOptions(t *testing.T) {
 		}
 	}
 }
-

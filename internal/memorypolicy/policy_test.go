@@ -444,3 +444,16 @@ func TestParseModprobeOptions(t *testing.T) {
 		t.Error("no lines must parse to nil, not an empty map")
 	}
 }
+
+// The kernel deprecates amdgpu.gttsize in favour of ttm.pages_limit (#32): a
+// policy declaring it is still checked, but it gets a note naming the
+// replacement.
+func TestDeprecationNote(t *testing.T) {
+	note := DeprecationNote(Policy{ExpectedKernelArgs: map[string]string{"amdgpu.gttsize": "126976", "amd_iommu": "off"}})
+	if !strings.Contains(note, "amdgpu.gttsize") || !strings.Contains(note, "ttm.pages_limit") {
+		t.Errorf("note = %q, want it to name gttsize and its replacement", note)
+	}
+	if got := DeprecationNote(Policy{ExpectedKernelArgs: map[string]string{"ttm.pages_limit": "1"}}); got != "" {
+		t.Errorf("a policy without deprecated parameters got a note: %q", got)
+	}
+}
