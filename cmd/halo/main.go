@@ -29,7 +29,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -79,6 +81,16 @@ func main() {
 // privilege path it exercises. Inheriting it would make the tests mean
 // different things on different runners: CI's job container runs as root.
 var geteuid = os.Geteuid
+
+// newBootStateReader is what check reads systemd's view of this boot with, and
+// isSystemdHost says whether there is one; variables so tests never depend on
+// the state of the machine running them.
+var (
+	newBootStateReader = func(procRoot string) standalone.BootStateReader {
+		return standalone.SystemdBootState{ProcRoot: procRoot}
+	}
+	isSystemdHost = standalone.IsSystemdHost
+)
 
 // newBootImageReader is what check reads boot images with — a variable so
 // tests can supply images without a node's initramfs tooling.
@@ -143,8 +155,15 @@ func parse(fs *flag.FlagSet, args []string) (int, bool) {
 	return 0, true
 }
 
-func read(c common) halov1alpha1.HaloNodeObservationSpec {
-	reading := nodeagent.Collector{ProcRoot: c.procRoot, SysRoot: c.sysRoot}.Collect()
+// read takes one reading. /etc and the ESP are read under root, so a check
+// pointed at a fixture tree never samples the machine running it.
+func read(c common, root string) halov1alpha1.HaloNodeObservationSpec {
+	reading := nodeagent.Collector{
+		ProcRoot: c.procRoot,
+		SysRoot:  c.sysRoot,
+		EtcRoot:  filepath.Join(root, "etc"),
+		ESPRoot:  filepath.Join(root, "efi"),
+	}.Collect()
 	return nodeagent.SpecFromReading(reading, metav1.Now())
 }
 
@@ -154,7 +173,7 @@ func inspect(args []string, stdout, stderr io.Writer) int {
 	if code, ok := parse(fs, args); !ok {
 		return code
 	}
-	spec := read(c)
+	spec := read(c, "/")
 	if c.json {
 		if err := standalone.WriteJSON(stdout, spec); err != nil {
 			fmt.Fprintf(stderr, "halo: %v\n", err)
@@ -170,7 +189,10 @@ func check(args []string, stdout, stderr io.Writer) int {
 	var c common
 	var policy, root string
 	var bootImages bool
+	var bootGrace time.Duration
 	fs := newFlags("check", stderr, &c)
+	fs.DurationVar(&bootGrace, "boot-grace", standalone.DefaultBootGrace,
+		"how long a boot may still be starting before that is reported as a boot that never completed")
 	fs.StringVar(&policy, "policy", "", "HaloDeviceConfig manifest to check against (required)")
 	fs.StringVar(&root, "root", "/", "filesystem root to read /etc/modprobe.d, installed kernels and boot images from")
 	fs.BoolVar(&bootImages, "boot-images", true,
@@ -187,7 +209,24 @@ func check(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "check: %v\n", err)
 		return standalone.ExitUsage
 	}
-	report := standalone.Evaluate(c.node, read(c), *cfg)
+	spec := read(c, root)
+	report := standalone.Evaluate(c.node, spec, *cfg)
+	switch {
+	case root != "/":
+		report.AddComponent(standalone.SkippedBootCompleted(halov1alpha1.ComponentNotObserved,
+			"skipped, not counted: -root is not /, and systemd describes the machine running check, not that tree"))
+	case !isSystemdHost():
+		report.AddComponent(standalone.SkippedBootCompleted(halov1alpha1.ComponentNotObserved,
+			"skipped, not counted: this host did not boot with systemd"))
+	default:
+		report.AddComponent(standalone.CheckBootCompleted(newBootStateReader(c.procRoot), bootGrace))
+	}
+	if geteuid() != 0 {
+		report.AddComponent(standalone.SkippedBootHold(halov1alpha1.ComponentNotObserved,
+			"skipped, not counted: the boot loader entries are readable only by root — run check as root to see whether splash still holds the next boot"))
+	} else {
+		report.AddComponent(standalone.CheckBootHold(c.node, spec))
+	}
 	switch {
 	case !bootImages:
 		report.AddComponent(standalone.SkippedBootImages(halov1alpha1.ComponentDisabled,
@@ -237,7 +276,7 @@ func apply(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "apply: %v\n", err)
 		return standalone.ExitUsage
 	}
-	plan := standalone.PlanApply(c.node, read(c), *cfg, root)
+	plan := standalone.PlanApply(c.node, read(c, root), *cfg, root)
 
 	if !execute {
 		if c.json {

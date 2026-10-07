@@ -75,7 +75,14 @@ func nodeFixture(t *testing.T) (string, string) {
 			t.Fatal(err)
 		}
 	}
-	must("proc/cmdline", "root=UUID=x splash quiet\n")
+	// A unit whose boot hold has been cleared: no `splash` on the running
+	// command line, in /etc/kernel/cmdline, or in its loader entry. The
+	// physical amd-halo still carries it (#13); TestCheckReportsTheBootHold
+	// covers that shape.
+	must("proc/cmdline", "root=UUID=x quiet\n")
+	must("etc/kernel/cmdline", " root=UUID=x quiet loglevel=3 \n")
+	must("efi/loader/entries/amd-ryzen-ai-developer-platform-6.18.44+rex+5-amd64.conf",
+		"title AMD Ryzen AI Developer Platform\noptions     root=UUID=x quiet loglevel=3\n")
 	must("sys/module/ttm/parameters/pages_limit", "24692260\n")
 	dev := "sys/bus/pci/devices/0000:c2:00.0/"
 	must(dev+"vendor", "0x1002\n")
@@ -272,3 +279,46 @@ func TestCheckBootImagesAsRoot(t *testing.T) {
 		}
 	})
 }
+
+
+// TestCheckReportsTheBootHold: as root, check reads the loader entries and
+// reports a unit that still holds every headless boot on `splash` (#13) as
+// drift, naming the file. Unprivileged, it says it skipped them.
+func TestCheckReportsTheBootHold(t *testing.T) {
+	root, policy := nodeFixture(t)
+	held := filepath.Join(root, "efi", "loader", "entries", "amd-ryzen-ai-developer-platform-6.18.44+rex+5-amd64.conf")
+	if err := os.WriteFile(held, []byte("title AMD\noptions     root=UUID=x splash quiet loglevel=3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	useImages(t, images{})
+
+	asUID(t, 0)
+	code, out, _ := runHalo(checkArgs(root, policy, "-boot-images=false")...)
+	if code != standalone.ExitDrifted {
+		t.Fatalf("exit %d, want %d for a unit whose loader entry carries splash:\n%s", code, standalone.ExitDrifted, out)
+	}
+	if !strings.Contains(out, "boot-hold") || !strings.Contains(out, "splash") {
+		t.Errorf("the report does not name the boot hold:\n%s", out)
+	}
+
+	asUID(t, 1000)
+	code, out, _ = runHalo(checkArgs(root, policy, "-boot-images=false")...)
+	if code != standalone.ExitCompliant {
+		t.Fatalf("unprivileged exit %d, want 0: the boot hold is skipped and not counted:\n%s", code, out)
+	}
+	if !strings.Contains(out, "readable only by root") {
+		t.Errorf("an unprivileged check does not say it skipped the boot hold:\n%s", out)
+	}
+}
+
+// TestCheckDoesNotJudgeThisMachinesBoot: pointed at a fixture tree, check must
+// not report the boot state of the machine running it.
+func TestCheckDoesNotJudgeThisMachinesBoot(t *testing.T) {
+	asUID(t, 1000)
+	root, policy := nodeFixture(t)
+	_, out, _ := runHalo(checkArgs(root, policy)...)
+	if !strings.Contains(out, "boot-completed") || !strings.Contains(out, "-root is not /") {
+		t.Errorf("a fixture-root check did not skip the boot-completed check:\n%s", out)
+	}
+}
+
